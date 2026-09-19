@@ -1,0 +1,23 @@
+# Model registry for MWM Harness. One entry per model id.
+# key_env names the environment variable that holds the API key; the key itself
+# lives in ~/.config/mwm-harness/secrets.env (mode 600), never in this repo.
+# Quirk flags stay "unverified" until spike/spike_toolcalls.py has measured them
+# and COMPAT.md records the result.
+
+[defaults]
+base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+key_env = "MWM_HARNESS_API_KEY"
+
+[models."qwen3.8-max"]
+family = "qwen"
+context_window = 1000000
+soft_budget = 200000
+thinking_field = "enable_thinking"
+
+[models."kimi-k2.7-code"]
+family = "kimi"
+soft_budget = 200000
+
+[models."glm-5.2"]
+family = "glm"
+soft_budget = 200000
