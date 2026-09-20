@@ -51,6 +51,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--web", action="store_true", help="serve the browser panel")
     parser.add_argument("--port", type=int, default=8765, help="panel port (default 8765)")
+    parser.add_argument(
+        "--vendor-monaco",
+        action="store_true",
+        help="download the panel's code viewer once (sha512-checked) for offline use",
+    )
     parser.add_argument("--version", action="version", version=f"mwm-harness {__version__}")
     return parser.parse_args(argv)
 
@@ -143,12 +148,27 @@ def _is_problem(event: object) -> bool:
     return isinstance(event, (ev.Notice, ev.HookBlocked))
 
 
-def main(argv: list[str] | None = None) -> int:
+def vendor_monaco_command() -> int:
+    from mwm_harness.web.vendor import VendorError, vendor_monaco
+
     try:
-        return asyncio.run(run(parse_args(argv)))
+        root, count = vendor_monaco()
+    except (VendorError, OSError) as exc:
+        print(f"mwm: {exc}", file=sys.stderr)
+        return 1
+    print(f"code viewer ready: {count} files in {root}; the panel now runs with no network")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.vendor_monaco:
+        return vendor_monaco_command()
+    try:
+        return asyncio.run(run(args))
     except ConfigError as exc:
         print(f"mwm: {exc}", file=sys.stderr)
-        return 2
+        return exc.code  # 2 = no API key, 3 = any other configuration mistake
     except KeyboardInterrupt:
         return 130
 

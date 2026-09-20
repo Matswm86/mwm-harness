@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mwm_harness import events as ev
@@ -30,6 +31,7 @@ from mwm_harness.config import ModelSpec
 from mwm_harness.loop import Session
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
+from mwm_harness.web.vendor import monaco_dir, monaco_ready
 
 STATIC = Path(__file__).parent / "static"
 POLICY_VIOLATION = 1008
@@ -264,6 +266,19 @@ def create_app(
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
 
+    # With the code viewer fetched once (mwm --vendor-monaco) the page needs no other
+    # host at all, so the CDN leaves the policy; the page tries /vendor first either way.
+    vendored = monaco_ready()
+    cdn = "" if vendored else f" {CDN}"
+    csp = (
+        f"default-src 'self'; script-src 'self' 'unsafe-inline'{cdn}; "
+        f"style-src 'self' 'unsafe-inline'{cdn}; font-src 'self'{cdn} data:; "
+        f"worker-src blob:; connect-src 'self'{cdn} "
+        f"ws://127.0.0.1:{port} ws://localhost:{port}; frame-ancestors 'none'"
+    )
+    if vendored:
+        app.mount("/vendor/monaco", StaticFiles(directory=monaco_dir()), name="monaco")
+
     @app.get("/")
     async def index() -> Response:
         # The page holds no data; everything arrives over the token-checked websocket.
@@ -271,12 +286,7 @@ def create_app(
             STATIC / "index.html",
             headers={
                 "Cache-Control": "no-store",
-                "Content-Security-Policy": (
-                    f"default-src 'self'; script-src 'self' 'unsafe-inline' {CDN}; "
-                    f"style-src 'self' 'unsafe-inline' {CDN}; font-src {CDN} data:; "
-                    f"worker-src blob:; connect-src 'self' {CDN} "
-                    f"ws://127.0.0.1:{port} ws://localhost:{port}; frame-ancestors 'none'"
-                ),
+                "Content-Security-Policy": csp,
                 "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff",
             },

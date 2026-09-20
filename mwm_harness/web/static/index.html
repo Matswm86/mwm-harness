@@ -168,21 +168,26 @@ const openFiles = new Map();   // path -> {content, error}
 let activeTab = "";            // "" is the chat
 let editor = null, diffEditor = null, monacoReady = null;
 
-function loadMonaco() {
-  if (monacoReady) return monacoReady;
-  monacoReady = new Promise((resolve) => {
+const MONACO_LOCAL = "/vendor/monaco/vs";  // present after: mwm --vendor-monaco
+
+function loadMonacoFrom(base) {
+  return new Promise((resolve) => {
     const script = document.createElement("script");
-    script.src = MONACO + "/loader.js";
-    script.onerror = () => resolve(null);          // offline: plain text views are used instead
+    script.src = base + "/loader.js";
+    script.onerror = () => resolve(null);
     script.onload = () => {
       try {
-        window.require.config({ paths: { vs: MONACO } });
+        window.require.config({ paths: { vs: base } });
         window.require(["vs/editor/editor.main"], () => resolve(window.monaco), () => resolve(null));
       } catch (e) { resolve(null); }
     };
     document.head.append(script);
     setTimeout(() => resolve(window.monaco || null), 8000);
   });
+}
+function loadMonaco() {
+  // Local copy first, then the CDN; with neither, plain text views are used instead.
+  if (!monacoReady) monacoReady = loadMonacoFrom(MONACO_LOCAL).then((m) => m || loadMonacoFrom(MONACO));
   return monacoReady;
 }
 const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;

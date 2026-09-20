@@ -17,7 +17,15 @@ REPO_MODELS = Path(__file__).resolve().parent.parent / "models.toml"
 
 
 class ConfigError(Exception):
-    """Something the person running the harness has to fix."""
+    """Something the person running the harness has to fix. ``mwm`` exits with ``code``."""
+
+    code = 3
+
+
+class MissingKey(ConfigError):
+    """No usable API key. Exit 2, so a script can tell it from a mistyped model or agent."""
+
+    code = 2
 
 
 def config_dir() -> Path:
@@ -88,12 +96,12 @@ def api_key_for(spec: ModelSpec, secrets: dict[str, str] | None = None) -> str:
         spec.key_env, ""
     )
     if not key:
-        raise ConfigError(
+        raise MissingKey(
             f"no API key: set {spec.key_env} in the environment or in "
             f"{config_dir() / 'secrets.env'} (mode 600)"
         )
     if key.endswith(".com") or "://" in key:
-        raise ConfigError(f"{spec.key_env} holds a hostname or URL, not an API key")
+        raise MissingKey(f"{spec.key_env} holds a hostname or URL, not an API key")
     return key
 
 
@@ -105,6 +113,11 @@ class Settings:
     permission_mode: str = "default"
     sandbox: str = "auto"  # auto | bwrap | off
     extra_writable: list[str] = field(default_factory=list)
+    # Folders outside the project that reading tools may open without asking. The
+    # workspace root, the scratch folder and extra_writable are always included.
+    extra_readable: list[str] = field(default_factory=list)
+    # Environment variables a Bash command may see although their name looks like a secret.
+    bash_env_keep: list[str] = field(default_factory=list)
     hook_settings: list[str] = field(default_factory=list)
     hook_timeout: float = 60.0
     max_stop_blocks: int = 3

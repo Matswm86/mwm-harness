@@ -160,5 +160,5 @@ def test_headless_agent_run_prints_the_report(tmp_path, monkeypatch, capsys):
     assert "not an http(s) URL" in fetched["content"]  # --allow let WebFetch run with nobody to ask
     assert (
         cli.main(["-p", "x", "--agent", "ghost", "--cwd", str(project), "--no-hooks", "--no-mcp"])
-        == 2
+        == 3  # an unknown agent is a configuration mistake; 2 is kept for a missing key
     )
