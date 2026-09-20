@@ -1,12 +1,17 @@
 # MWM Harness
 
-A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
-slash commands first, a local browser window with panels (files, code and diffs,
-tasks, plan, token meter) later. One core library, thin front-ends.
+![The MWM Harness browser panel: model and permission-mode pickers, a live context and token meter, the chat, and the tasks, plan and touched-files panels](docs/panel.png)
 
-> **Work in progress.** Phases 1 to 7 are built and tested against a scripted
-> model. No run against a live model has happened yet, so nothing here is stable
-> and everything may change without notice.
+A personal agent harness for Qwen, Kimi and GLM models, in the mould of Claude
+Code and Qwen Code: one core library, two thin front-ends on the same session.
+`mwm --open` shows the browser panel above (files, code and diffs, tasks, plan,
+token meter); `mwm` alone is a terminal prompt with the same slash commands.
+
+> **Work in progress.** Phases 1 to 7 are built. The first runs against a live
+> model happened on a local 4B model behind Ollama: it fixed a bug through
+> Read, Edit and Bash behind approval prompts. The three hosted target models
+> have not been run yet. The terminal front-end is a plain prompt today and is
+> being rebuilt (phase 8). Nothing here is stable.
 
 ## Roadmap
 
@@ -22,10 +27,15 @@ Each phase closes on a test, not on a date.
 | 5 | Browser panels: chat, status bar with live context and token meter, tasks, plan, approval dialogs | Tasks tick live; context % equals the API usage numbers |
 | 6 | File tree, open-files list, code viewer, diff before approval | Rejecting a diff leaves the file byte-identical |
 | 7 | Subagents on a per-agent model, compaction, resume | A subagent on another model returns; a long session compacts and continues |
+| 8 | Terminal front-end to the standard of Claude Code and Qwen Code: answers streamed as rendered markdown, a spinner with time and tokens, a framed input with history and slash completion, tool cards, coloured diff approvals, a status line | A bug-fix task reads like it does in those tools; every slash command works; the core and its tests are untouched |
+
+Where each phase stands: 1 to 6 are closed. 0 is half closed: four local models
+passed the parallel tool-call spike (`COMPAT.md`), the hosted models wait on a
+key. 2 closed on a local model. 7 is built, its closing tests need a hosted
+model. 8 has not started. The panel does not render markdown in answers yet.
 
 ## State
 
-Phases 1 to 7 are built; phase 0 (the live spike) still waits on an API key.
 Every test runs without a network: a scripted provider plays the model, a fake
 stdio server plays MCP, a mocked transport plays the web.
 
@@ -41,10 +51,23 @@ stdio server plays MCP, a mocked transport plays the web.
   argument names match Claude Code's, so existing hook matchers keep working.
 - `permissions.py`: three modes (`default`, `acceptEdits`, `bypassPermissions`)
   and a hard deny list that no mode and no hook can lift (force-push, skipping
-  commit hooks, recursive delete of `/` or home, vector-database deletes, broker
-  orders, a hand-curated notes folder).
+  commit hooks by flag or by `core.hooksPath`, recursive delete of `/` or home
+  with `rm` or `find`, a decoded command piped into a shell, vector-database
+  deletes, broker orders, a hand-curated notes folder). Broker and delete tools
+  of MCP servers are matched on what the tool does, so renaming a server does
+  not lift the rule. Reading is free inside the project and its read roots
+  (the workspace, the scratch folder, `extra_writable`, `extra_readable`);
+  anywhere else the person is asked. Key material (`~/.ssh`, `secrets.env`,
+  `.aws`, `.gnupg`, `.netrc`, git and gh credentials) is denied for Read, Edit
+  and Bash in every mode.
 - `sandbox.py`: shell commands run inside bubblewrap when it is available: the
-  filesystem is read-only outside the project and the session scratch folder.
+  filesystem is read-only outside the project and the session scratch folder,
+  and an empty folder is mounted over `~/.ssh`, `~/.gnupg`, `~/.aws` and the
+  harness's own config. It is a write boundary, not a network boundary. A
+  command's environment carries no variable whose name looks like a secret
+  (`bash_env_keep` exempts one); MCP servers keep their own keys and lose the
+  model keys. When bubblewrap is missing the session says so at start instead
+  of running bare in silence.
 - `hooks.py`: reads Claude-Code-style `settings.json` files and runs their hook
   commands with the same stdin payload and the same answers (exit 2, `decision:
   block`, `additionalContext`, `updatedInput`, `permissionDecision`, PermissionRequest
@@ -91,8 +114,10 @@ stdio server plays MCP, a mocked transport plays the web.
   The API does not expose the plan's credit balance, so the bar counts requests.
 - `preview.py` and the panel's file views: a file tree of the project, tabs of
   open files, a list of files the tools touched, and a read-only code viewer
-  (Monaco 0.56.0 from jsdelivr; without a network the page falls back to plain
-  text). Before a `Write` or `Edit` is approved, its result is computed without
+  (Monaco 0.56.0 from jsdelivr, or from the machine itself after
+  `mwm --vendor-monaco`, which downloads it once, checks a pinned sha512 and lets
+  the panel drop the CDN from its content security policy; with neither, the
+  page falls back to plain text). Before a `Write` or `Edit` is approved, its result is computed without
   touching the disk and shown as a side-by-side diff; the terminal prompt prints
   the same change as a unified diff. Browsing answers only for paths inside the
   project: `..`, absolute paths and symlinks that lead out are refused.
@@ -119,8 +144,34 @@ stdio server plays MCP, a mocked transport plays the web.
 - `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
   on this machine and reports which of them fired and blocked.
 
-Never run against a live model: everything above. Phase 7 closes when a subagent
-on another model returns and a long session compacts at its budget and continues.
+- `jev.py`, the `Judge` tool, `mwm-jev`: a second opinion from Jev, a model that
+  returns typed decisions (a yes/no probability, one option of a closed set, a
+  level on a scale) and no text. It is one extra vote beside other evidence,
+  never the decider. Every call goes to an append-only log; the real result is
+  recorded later and `mwm-jev report` gives the hit rate per domain and label,
+  with a Brier score for yes/no questions. The tool asks for approval because
+  the text it judges leaves the machine. Key: `TYPESAFE_API_KEY`.
+- Loop guards found by the first live runs: a turn ends after 60 model requests
+  (`max_requests_per_turn`); compaction keeps the prompt size right after a
+  summary as a floor and waits for half a budget of growth, because a prompt
+  whose fixed part is over the budget used to compact after every tool call; an
+  `Edit` that cannot apply returns its error without asking the person first.
+
+Run against a live model so far: the tool-call spike and a bug-fix task, on
+local models only. Phase 7 closes when a subagent on another model returns and
+a long session compacts at its budget and continues.
+
+## Reviews
+
+The code was written by a model, so it gets reviewed like code from a stranger.
+A security review of the permission, sandbox, web and panel code found five
+working bypasses (any file readable without a prompt, API keys in every shell
+command's environment, two deny rules lifted by renaming an MCP server, `rm`
+with long options, a silent no-sandbox fallback). All five are fixed and each
+is a test in `tests/test_security_review.py`. Still open: `WebFetch` resolves
+a host twice (a DNS-rebinding window), the sandbox has no network boundary, and
+about half the code (`cli.py`, the terminal front-end, `skills.py`, the MCP
+protocol handling) has had no review yet.
 
 ## Use
 
@@ -129,12 +180,35 @@ on another model returns and a long session compacts at its budget and continues
 .venv/bin/mwm --mode acceptEdits  # file edits inside the project run without asking
 .venv/bin/mwm --resume last       # continue the newest session of this directory
 .venv/bin/mwm --web               # browser panel on 127.0.0.1:8765 (needs the web extra)
+.venv/bin/mwm --open              # the same, shown in its own browser window
+.venv/bin/mwm --vendor-monaco     # once: fetch the code viewer for use with no network
 .venv/bin/mwm -p "summarise README.md"
+.venv/bin/mwm-jev report          # the judge's decision log and hit rate
 ```
 
+Exit codes of `mwm`: 2 = no API key, 3 = any other configuration mistake
+(unknown model, unknown agent).
+
+### A local model
+
+`models.toml` carries two entries for Ollama's OpenAI-compatible endpoint. Any
+non-empty `OLLAMA_API_KEY` will do. Two things to know: Ollama cuts a prompt
+that is longer than the model's context length without saying so, and its `/v1`
+endpoint cannot raise that length per request, so build a variant once:
+
+```bash
+printf 'FROM qwen3-vl:4b-instruct\nPARAMETER num_ctx 16384\n' > Modelfile
+ollama create qwen3-vl-4b-instruct-16k -f Modelfile
+OLLAMA_API_KEY=ollama .venv/bin/mwm --model qwen3-vl-4b-instruct-16k --no-mcp --no-hooks
+```
+
+A 4B model on a laptop GPU is slow and loops on wrong edits; it is a way to
+exercise the loop, not a way to work.
+
 Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
-permission mode, sandbox, extra writable paths, hook settings files, `mcp_allow`,
-`mcp_files`, `skill_dirs`, `web_allow_private`),
+permission mode, sandbox, extra writable and readable paths, `bash_env_keep`,
+`max_requests_per_turn`, hook settings files, `mcp_allow`, `mcp_files`,
+`skill_dirs`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
 `hooks.json` (hooks in the `settings.json` format).
 
