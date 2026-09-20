@@ -61,6 +61,30 @@ def test_declined_tool_does_not_run(make_session):
     assert tool_results(session)[0]["is_error"] is True
 
 
+def test_an_edit_that_cannot_apply_is_refused_without_asking_the_person(make_session):
+    # Seen live 09-20: a 4B model repeated one stale Edit and the person got 15 prompts.
+    approver = FixedApprover(True)
+    turns = [
+        chunks_for(tool_calls=[("Read", {"file_path": "a.py"})]),
+        chunks_for(
+            tool_calls=[("Edit", {"file_path": "a.py", "old_string": "gone", "new_string": "x"})]
+        ),
+        chunks_for(
+            tool_calls=[
+                ("Edit", {"file_path": "a.py", "old_string": "y = 1", "new_string": "y = 2"})
+            ]
+        ),
+        chunks_for("Done."),
+    ]
+    session, _, _ = make_session(turns, approver=approver)
+    (session.cwd / "a.py").write_text("y = 1\n")
+    run(session.send("edit"))
+    results = tool_results(session)
+    assert results[1]["is_error"] is True and "Read it again" in results[1]["content"]
+    assert [name for name, _ in approver.asked] == ["Edit"]  # only the edit that can apply
+    assert (session.cwd / "a.py").read_text() == "y = 2\n"
+
+
 def test_read_only_tools_skip_approval(make_session):
     approver = FixedApprover(False)
     turns = [chunks_for(tool_calls=[("Glob", {"pattern": "*.txt"})]), chunks_for("None.")]
@@ -156,6 +180,20 @@ def test_stop_hook_that_always_blocks_is_released(make_session, tmp_path):
     ended = run(session.send("write"))
     assert ended.reason == "stop_blocks_exhausted"
     assert ended.text == "Try 2."
+
+
+def test_stop_hook_that_exits_1_is_a_failed_hook_not_a_block(make_session, tmp_path):
+    # Only exit 2 (or a JSON "block") blocks. Exit 1 is a broken hook: the answer stands,
+    # the model is not asked again, and the person sees a notice instead of silence.
+    hook = write_hook(tmp_path, "stop.sh", "cat > /dev/null\necho 'traceback: boom' >&2\nexit 1\n")
+    turns = [chunks_for("Only try."), chunks_for("Must not be requested.")]
+    session, recorder, provider = make_session(turns, hooks={"Stop": [{"command": hook}]})
+    ended = run(session.send("write"))
+    assert ended.reason == "done" and ended.text == "Only try."
+    assert len(provider.requests) == 1
+    assert recorder.of(ev.HookBlocked) == []
+    notices = [n.text for n in recorder.of(ev.Notice)]
+    assert any("stop.sh" in text and "boom" in text for text in notices), notices
 
 
 def test_pretooluse_rewrite_is_used_and_still_checked_by_deny_list(make_session, tmp_path):

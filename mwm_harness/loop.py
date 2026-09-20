@@ -278,6 +278,7 @@ class Session:
             isCompactSummary=True,
         )
         self.meter.prompt_tokens = self.meter.completion_tokens = self.meter.cached_tokens = 0
+        self.meter.floor_pending = True
         self._emit_usage()
         self.bus.emit(ev.Compacted(trigger, summary, before))
         outcome = await self.hooks.run("PostCompact", trigger=trigger, compact_summary=summary)
@@ -392,8 +393,15 @@ class Session:
         self._add(Message("user", prompt))
 
         stop_blocks = 0
+        requests = 0
         while True:
-            if self.meter.over_budget and self.settings.auto_compact:
+            cap = self.settings.max_requests_per_turn
+            if cap and requests >= cap:
+                note = f"turn ended: {requests} model requests without a final answer"
+                self.bus.emit(ev.Notice("error", note + " (max_requests_per_turn)"))
+                return self._end("error", note)
+            requests += 1
+            if self.meter.needs_compaction and self.settings.auto_compact:
                 self.bus.emit(
                     ev.Notice("info", f"soft budget reached, compacting: {self.meter.line()}")
                 )
@@ -423,8 +431,19 @@ class Session:
                 return self._end("error", str(exc))
 
             turn = assembler.finish()
+            floor_was_pending = self.meter.floor_pending
             if self.meter.record(turn.usage):
                 self._emit_usage()
+                if floor_was_pending and self.meter.floor_over_budget:
+                    self.bus.emit(
+                        ev.Notice(
+                            "warn",
+                            f"right after compaction the prompt is {self.meter.floor:,} tokens, "
+                            f"over the soft budget of {self.meter.soft_budget:,}: the system "
+                            "prompt and tool list alone do not fit. Raise soft_budget or trim "
+                            "the rules; compaction now waits for half a budget of growth",
+                        )
+                    )
             else:
                 self.bus.emit(
                     ev.Notice("warn", "the endpoint sent no usage numbers for this answer")
@@ -539,6 +558,10 @@ class Session:
             decision.verdict = "allow"
         if decision.verdict == "allow" and pre.permission == "ask":
             decision.verdict, decision.reason = "ask", pre.permission_reason or "a hook asked"
+        if decision.verdict == "ask":
+            doomed = tool.refusal(tool_input, self.tool_ctx)
+            if doomed:  # seen live: 15 approval prompts for an Edit that could not apply
+                return ToolResult(doomed, True)
         if decision.verdict == "ask" and not await self._approve(name, tool_input, decision.reason):
             return ToolResult("The user declined this action. Ask before trying another way.", True)
 

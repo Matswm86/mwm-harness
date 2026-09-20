@@ -58,6 +58,14 @@ class Tool:
             "input_schema": self.input_schema,
         }
 
+    def refusal(self, tool_input: dict[str, Any], ctx: ToolContext) -> str | None:
+        """Why this call would fail without changing anything, or None.
+
+        The loop asks before it asks the person: nobody should have to approve
+        a call the tool is going to refuse anyway.
+        """
+        return None
+
     def check(self, tool_input: dict[str, Any]) -> str | None:
         """Return an error text when a required argument is missing or mistyped."""
         properties = self.input_schema.get("properties", {})

@@ -39,6 +39,18 @@ def test_text_and_reasoning_are_joined_separately():
     assert turn.finish_reason == "stop"
 
 
+def test_reasoning_field_as_ollama_names_it_is_kept():
+    turn = _run(
+        [
+            _chunk({"role": "assistant", "content": "", "reasoning": "think "}),
+            _chunk({"role": "assistant", "content": "", "reasoning": "more"}),
+            _chunk({"content": "Hi"}, finish_reason="stop"),
+        ]
+    )
+    assert turn.reasoning == "think more"
+    assert turn.text == "Hi"
+
+
 def test_interleaved_parallel_calls_are_reassembled_by_index():
     turn = _run(
         [

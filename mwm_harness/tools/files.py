@@ -105,28 +105,40 @@ class Edit(Tool):
         "required": ["file_path", "old_string", "new_string"],
     }
 
-    async def run(self, tool_input: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    def refusal(self, tool_input: dict[str, Any], ctx: ToolContext) -> str | None:
         path = ctx.resolve(tool_input["file_path"])
         old, new = tool_input["old_string"], tool_input["new_string"]
         if not path.is_file():
-            return ToolResult(f"file not found: {path}", True)
+            return f"file not found: {path}"
         if path not in ctx.read_files:
-            return ToolResult(f"Read {path} before editing it", True)
+            return f"Read {path} before editing it"
         if old == new:
-            return ToolResult("old_string and new_string are identical", True)
-        text = path.read_text(encoding="utf-8")
-        found = text.count(old)
+            return "old_string and new_string are identical"
+        try:
+            found = path.read_text(encoding="utf-8").count(old)
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"could not read {path}: {exc}"
         if found == 0:
-            return ToolResult("old_string was not found in the file", True)
-        if found > 1 and not tool_input.get("replace_all"):
-            return ToolResult(
-                f"old_string occurs {found} times; add context or set replace_all", True
+            return (
+                "old_string was not found in the file. The file may have changed since "
+                "you read it: Read it again and copy the exact current text"
             )
+        if found > 1 and not tool_input.get("replace_all"):
+            return f"old_string occurs {found} times; add context or set replace_all"
+        return None
+
+    async def run(self, tool_input: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        problem = self.refusal(tool_input, ctx)
+        if problem:
+            return ToolResult(problem, True)
+        path = ctx.resolve(tool_input["file_path"])
+        old, new = tool_input["old_string"], tool_input["new_string"]
+        text = path.read_text(encoding="utf-8")
         try:
             path.write_text(text.replace(old, new), encoding="utf-8")
         except OSError as exc:
             return ToolResult(f"could not write {path}: {exc}", True)
-        return ToolResult(f"replaced {found} occurrence(s) in {path}")
+        return ToolResult(f"replaced {text.count(old)} occurrence(s) in {path}")
 
 
 def _walk(root: Path):

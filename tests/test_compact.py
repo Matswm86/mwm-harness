@@ -66,6 +66,52 @@ def test_auto_compact_at_the_soft_budget_continues_the_turn(make_session):
     assert "SUMMARY: listing" in final[1]["content"] and "exact next step" in final[1]["content"]
 
 
+def test_a_prompt_that_stays_over_budget_compacts_once_not_on_every_request(make_session):
+    # Seen live 09-20 on a 16k local model: system prompt + tools = 12,845 tokens against
+    # a 12,000 budget, so the harness summarised after every single tool call.
+    turns = [
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.md"})], usage=BIG),
+        chunks_for("SUMMARY: listing markdown files."),
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.txt"})], usage=BIG),
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.py"})], usage=BIG),
+        chunks_for("Nothing found.", usage=BIG),
+    ]
+    session, recorder, provider = make_session(turns)
+    ended = run(session.send("list files"))
+    assert ended.reason == "done" and ended.text == "Nothing found."
+    assert len(recorder.of(ev.Compacted)) == 1
+    assert len(provider.requests) == 5
+    warnings = [n.text for n in recorder.of(ev.Notice) if "right after compaction" in n.text]
+    assert len(warnings) == 1 and "120,000" in warnings[0]
+
+
+def test_compaction_runs_again_after_half_a_budget_of_growth(make_session):
+    small = {"prompt_tokens": 20_000, "completion_tokens": 100}
+    grown = {"prompt_tokens": 150_000, "completion_tokens": 100}
+    turns = [
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.md"})], usage=BIG),
+        chunks_for("SUMMARY one."),
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.txt"})], usage=small),  # floor = 20k
+        chunks_for(tool_calls=[("Glob", {"pattern": "*.py"})], usage=grown),
+        chunks_for("SUMMARY two."),
+        chunks_for("Done.", usage=small),
+    ]
+    session, recorder, _ = make_session(turns)
+    ended = run(session.send("list files"))
+    assert ended.text == "Done."
+    assert len(recorder.of(ev.Compacted)) == 2
+
+
+def test_a_model_that_never_stops_calling_tools_hits_the_request_cap(make_session):
+    turns = [chunks_for(tool_calls=[("Glob", {"pattern": "*.md"})]) for _ in range(4)]
+    session, recorder, provider = make_session(turns)
+    session.settings.max_requests_per_turn = 3
+    ended = run(session.send("loop"))
+    assert ended.reason == "error" and "3 model requests" in ended.text
+    assert len(provider.requests) == 3
+    assert any("max_requests_per_turn" in n.text for n in recorder.of(ev.Notice))
+
+
 def test_auto_compact_can_be_switched_off(make_session):
     session, recorder, _ = make_session([chunks_for("a", usage=BIG), chunks_for("b")])
     session.settings.auto_compact = False

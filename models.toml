@@ -21,3 +21,26 @@ soft_budget = 200000
 [models."glm-5.2"]
 family = "glm"
 soft_budget = 200000
+
+# Local models behind Ollama's OpenAI-compatible endpoint. Ollama ignores the
+# key, but key_env must hold any non-empty value (OLLAMA_API_KEY=ollama).
+# The endpoint cannot take num_ctx per request and Ollama cuts a longer prompt
+# SILENTLY at the model's context length (4096 by default; measured 09-20: a
+# 7k-token prompt came back as 2050 input tokens). So these ids are 16k
+# variants built once with:
+#   printf 'FROM qwen3-vl:4b-instruct\nPARAMETER num_ctx 16384\n' > Modelfile
+#   ollama create qwen3-vl-4b-instruct-16k -f Modelfile
+# Both base models passed the parallel tool-call spike, see COMPAT.md.
+[models."qwen3-vl-4b-instruct-16k"]
+family = "qwen"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 16384
+soft_budget = 12000
+
+[models."gemma4-e4b-16k"]
+family = "gemma"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 16384
+soft_budget = 12000

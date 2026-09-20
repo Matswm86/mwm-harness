@@ -101,6 +101,10 @@ class ContextMeter:
     total_prompt: int = 0
     total_completion: int = 0
     requests: int = 0
+    # Prompt size of the first request after a compaction: what the system
+    # prompt, the tool list and the summary cost with no history at all.
+    floor: int = 0
+    floor_pending: bool = False
 
     def record(self, usage: dict[str, Any] | None) -> bool:
         """Store one answer's usage. Returns False when the endpoint sent none."""
@@ -113,6 +117,9 @@ class ContextMeter:
         self.total_prompt += self.prompt_tokens
         self.total_completion += self.completion_tokens
         self.requests += 1
+        if self.floor_pending:
+            self.floor = self.prompt_tokens
+            self.floor_pending = False
         return True
 
     @property
@@ -127,6 +134,24 @@ class ContextMeter:
     @property
     def over_budget(self) -> bool:
         return self.used >= self.soft_budget
+
+    @property
+    def floor_over_budget(self) -> bool:
+        return self.floor >= self.soft_budget > 0
+
+    @property
+    def needs_compaction(self) -> bool:
+        """Over budget AND a compaction can still win something back.
+
+        When the fixed part of the prompt alone is over the budget, compacting
+        on every request only burns requests (seen live on a 16k local model:
+        12,845 fixed tokens against a 12,000 budget compacted after every tool
+        call). After a compaction the history has to grow by half a budget
+        before the next one.
+        """
+        if not self.over_budget:
+            return False
+        return self.floor == 0 or self.used >= self.floor + self.soft_budget // 2
 
     def line(self) -> str:
         return (

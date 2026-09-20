@@ -71,8 +71,11 @@ class StreamAssembler:
             delta = choice.get("delta") or {}
             if delta.get("content"):
                 self._text.append(delta["content"])
-            if delta.get("reasoning_content"):
-                self._reasoning.append(delta["reasoning_content"])
+            # Alibaba and DeepSeek name the field reasoning_content, Ollama and
+            # OpenRouter name it reasoning (measured on Ollama 0.34.0).
+            thinking = delta.get("reasoning_content") or delta.get("reasoning")
+            if thinking:
+                self._reasoning.append(thinking)
             for fragment in delta.get("tool_calls") or []:
                 self._feed_fragment(fragment)
 

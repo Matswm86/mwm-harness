@@ -108,6 +108,9 @@ class Settings:
     hook_settings: list[str] = field(default_factory=list)
     hook_timeout: float = 60.0
     max_stop_blocks: int = 3
+    # Model requests one turn may make before the harness ends it. A weak model
+    # can repeat one tool call forever; 0 switches the cap off.
+    max_requests_per_turn: int = 60
     hooks_may_approve: bool = False  # a PreToolUse "allow" skips the approval prompt
     tool_output_cap: int = 30_000
     mcp_enabled: bool = True
