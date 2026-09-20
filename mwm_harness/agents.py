@@ -21,6 +21,8 @@ from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 
 # Claude Code agent files name Claude tiers; the settings map them to configured models.
 INHERIT = ("", "inherit")
+# Agents that ship with the harness (the cross-family critic).
+BUILTIN_AGENTS = Path(__file__).parent / "builtin_agents"
 
 
 @dataclass
@@ -45,6 +47,7 @@ def agent_roots(cwd: Path) -> list[Path]:
         cwd / ".claude" / "agents",
         workspace_root() / ".claude" / "agents",
         Path.home() / ".claude" / "agents",
+        BUILTIN_AGENTS,  # last, so an agent file of the same name shadows a built-in
     ]
 
 

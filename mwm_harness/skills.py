@@ -18,6 +18,8 @@ from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 
 FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 MAX_DESCRIPTION = 600
+# Reasoning playbooks that ship with the harness (audit, debug, challenge, pre-delivery).
+PLAYBOOKS = Path(__file__).parent / "playbooks"
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -57,6 +59,7 @@ def skill_roots(cwd: Path, extra: list[str]) -> list[tuple[str, Path]]:
     for entry in extra:
         prefix, _, folder = entry.rpartition("=")
         roots.append((prefix, Path(folder).expanduser()))
+    roots.append(("", PLAYBOOKS))  # last, so any skill of the same name shadows a playbook
     return roots
 
 

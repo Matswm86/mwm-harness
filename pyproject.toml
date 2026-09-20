@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 mwm = "mwm_harness.cli:main"
 mwm-jev = "mwm_harness.jev:main"
+mwm-eval = "mwm_harness.reason_eval:main"
 
 [project.optional-dependencies]
 web = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
@@ -23,7 +24,7 @@ dev = ["pytest>=8.0", "ruff>=0.15", "fastapi>=0.110", "uvicorn>=0.29", "websocke
 include = ["mwm_harness*"]
 
 [tool.setuptools.package-data]
-mwm_harness = ["web/static/*"]
+mwm_harness = ["web/static/*", "playbooks/*/SKILL.md", "builtin_agents/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
