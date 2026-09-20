@@ -20,6 +20,7 @@ from mwm_harness.reason_eval import (
     keyword_grade,
     load_cases,
     main,
+    make_caller,
     parse_judge,
     playbook_text,
     run,
@@ -178,3 +179,32 @@ def test_cli_compare_and_bad_input(tmp_path: Path, capsys):
     assert "model-a" in capsys.readouterr().out
     assert main(["--model", "cmd:cat", "--ids", "nope"]) == 2
     assert main(["--model", "cmd:cat", "--arms", "critic", "--limit", "1"]) == 2
+
+
+def test_a_model_caller_caps_the_answer_length_and_zero_lifts_the_cap():
+    from mwm_harness.config import ModelSpec
+
+    sent: list[dict] = []
+
+    class Spy:
+        async def stream(self, spec, system, messages, tools):
+            sent.append(spec.extra_body)
+            yield {"choices": [{"delta": {"content": "ok"}}]}
+
+    models = {"m": ModelSpec("m", "http://x/v1", "K", extra_body={"seed": 1})}
+    assert asyncio.run(make_caller("m", models, Spy())("s", "u")) == "ok"
+    asyncio.run(make_caller("m", models, Spy(), 0)("s", "u"))
+    assert sent == [{"seed": 1, "max_tokens": 2000}, {"seed": 1}]
+    assert models["m"].extra_body == {"seed": 1}
+
+
+def test_resume_asks_only_what_the_interrupted_run_did_not_answer(tmp_path: Path):
+    out = tmp_path / "r.jsonl"
+    first, _ = scripted("the wrapper is unreliable, use pgrep")
+    done = asyncio.run(run([case()], ["bare"], "m", first, None, None, out))
+    second, asked = scripted("yes")
+    results = asyncio.run(
+        run([case(), case(id="c2")], ["bare"], "m", second, None, None, out, 1, done)
+    )
+    assert len(asked) == 1 and [r.case for r in results] == ["c1", "c2"]
+    assert len(out.read_text().splitlines()) == 2

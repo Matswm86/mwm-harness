@@ -31,7 +31,7 @@ import sys
 import tomllib
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -50,6 +50,9 @@ BASE_SYSTEM = (
     "Reply to the request below as you would in the session."
 )
 COMMAND_TIMEOUT = 600.0
+# A small model can fall into a loop and write until its context is full (seen live:
+# 6,900 tokens and 20 minutes on one case). A reply to these cases needs a few hundred.
+MAX_TOKENS = 2000
 
 # (system, user) -> reply
 Caller = Callable[[str, str], Awaitable[str]]
@@ -207,12 +210,17 @@ def command_caller(command: str) -> Caller:
     return call
 
 
-def make_caller(name: str, models: dict[str, ModelSpec], provider: Provider) -> Caller:
+def make_caller(
+    name: str, models: dict[str, ModelSpec], provider: Provider, max_tokens: int = MAX_TOKENS
+) -> Caller:
     if name.startswith("cmd:"):
         return command_caller(name[4:])
     if name not in models:
         raise EvalError(f"unknown model {name}; known: {', '.join(models)}")
-    return model_caller(models[name], provider)
+    spec = models[name]
+    if max_tokens > 0:
+        spec = replace(spec, extra_body={**spec.extra_body, "max_tokens": max_tokens})
+    return model_caller(spec, provider)
 
 
 # -------------------------------------------------------------------- arms
@@ -313,9 +321,12 @@ async def run(
     judge: Caller | None,
     out: Path | None,
     concurrency: int = 1,
+    done: list[Result] | None = None,
 ) -> list[Result]:
+    """``done`` holds answers from an interrupted run; those (arm, case) pairs are not asked again."""
     gate = asyncio.Semaphore(max(1, concurrency))
-    results: list[Result] = []
+    results: list[Result] = list(done or [])
+    have = {(r.arm, r.case) for r in results}
 
     async def one(case: Case, arm: str) -> None:
         async with gate:
@@ -338,7 +349,8 @@ async def run(
             mark = "PASS" if passed else "miss"
             print(f"  {mark}  {arm:<10} {case.id}  {note}", file=sys.stderr)
 
-    await asyncio.gather(*(one(case, arm) for arm in arms for case in cases))
+    todo = [(case, arm) for arm in arms for case in cases if (arm, case.id) not in have]
+    await asyncio.gather(*(one(case, arm) for case, arm in todo))
     return results
 
 
@@ -353,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--out-dir", type=Path, default=Path("evals/out"))
+    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS, help="0 = no cap")
+    parser.add_argument("--resume", type=Path, help="result file of an interrupted run")
     parser.add_argument("--compare", nargs="+", type=Path, help="print a table from result files")
     args = parser.parse_args(argv)
 
@@ -377,17 +391,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise EvalError(f"unknown arm {arm}; known: {ARMS}")
         models = load_models()
         provider = OpenAICompatProvider()
-        writer = make_caller(args.model, models, provider)
-        critic = make_caller(args.critic, models, provider) if args.critic else None
-        judge = make_caller(args.judge, models, provider) if args.judge else None
+        cap = args.max_tokens
+        writer = make_caller(args.model, models, provider, cap)
+        critic = make_caller(args.critic, models, provider, cap) if args.critic else None
+        judge = make_caller(args.judge, models, provider, cap) if args.judge else None
         if "critic" in arms and critic is None:
             raise EvalError("the critic arm needs --critic")
         args.out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         label = re.sub(r"[^\w.-]+", "_", args.model)[:40]
-        out = args.out_dir / f"{stamp}-{label}.jsonl"
+        out = args.resume or args.out_dir / f"{stamp}-{label}.jsonl"
+        done = [r for r in read_results([out]) if r.model == args.model] if args.resume else []
         results = asyncio.run(
-            run(cases, arms, args.model, writer, critic, judge, out, args.concurrency)
+            run(cases, arms, args.model, writer, critic, judge, out, args.concurrency, done)
         )
     except (EvalError, ConfigError) as exc:
         print(f"mwm-eval: {exc}", file=sys.stderr)
