@@ -26,7 +26,8 @@ HELP = """\
 /model [id]           show or switch the model
 /models               list configured models
 /context  /usage      context meter and session token totals
-/mode [name]          show or set the permission mode (default, acceptEdits, bypassPermissions)
+/mode [name]          show or set the permission mode (default, acceptEdits, bypassPermissions, plan)
+/plan [off]           plan mode: reading tools only until you approve a plan; shows the last plan
 /permissions          mode, sandbox state and the hard deny list
 /tasks                the current task list
 /hooks                registered hooks per event
@@ -143,6 +144,14 @@ def run_command(
         elif argument:
             out.line(f"unknown mode; choose one of {', '.join(MODES)}")
         out.line(f"permission mode: {session.permissions.mode}")
+    elif name == "/plan":
+        if argument == "off":
+            session.set_mode("default")
+        elif session.permissions.mode != "plan":
+            session.set_mode("plan")
+        out.line(f"permission mode: {session.permissions.mode}")
+        if session.plan:
+            out.line(session.plan)
     elif name == "/permissions":
         state = "on (bubblewrap)" if session.tool_ctx.sandbox.enabled else "OFF"
         out.line(f"mode: {session.permissions.mode} | shell sandbox: {state}")

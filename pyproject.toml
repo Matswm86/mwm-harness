@@ -15,10 +15,14 @@ dependencies = [
 mwm = "mwm_harness.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.15"]
+web = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
+dev = ["pytest>=8.0", "ruff>=0.15", "fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
 
 [tool.setuptools.packages.find]
 include = ["mwm_harness*"]
+
+[tool.setuptools.package-data]
+mwm_harness = ["web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

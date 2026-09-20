@@ -59,6 +59,12 @@ def default_hook_settings(cwd: Path) -> list[Path]:
     return unique
 
 
+PLAN_MODE_NOTE = (
+    "Plan mode is on. Research with the reading tools only; do not edit files or run commands "
+    "that change anything. When the plan is complete, call ExitPlanMode with it."
+)
+
+
 def reminder(text: str) -> str:
     return f"<system-reminder>\n{text}\n</system-reminder>"
 
@@ -134,6 +140,9 @@ class Session:
             self.cwd,
         )
         self.hooks.permission_mode = self.permissions.mode
+        self.plan = ""
+        self._mode_before_plan = "default"
+        self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
         self._turn_task: asyncio.Task[ev.TurnEnded] | None = None
 
@@ -174,10 +183,26 @@ class Session:
         self.meter.context_window = model.context_window
         self.meter.soft_budget = model.soft_budget
         self._system_prompt = None
+        self.bus.emit(ev.ModelChanged(model.id))
 
     def set_mode(self, mode: str) -> None:
+        if mode == "plan" and self.permissions.mode != "plan":
+            self._mode_before_plan = self.permissions.mode
         self.permissions.set_mode(mode)
         self.hooks.permission_mode = mode
+        self.bus.emit(ev.ModeChanged(mode))
+
+    async def _handle_plan(self, plan: str) -> bool:
+        """Show the plan, ask the person, and leave plan mode on a yes."""
+        self.plan = plan
+        self.bus.emit(ev.PlanProposed(plan))
+        if self.permissions.mode != "plan":
+            return True  # nothing to unlock; the plan is shown and work goes on
+        approved = await self.approver.ask("ExitPlanMode", {"plan": plan}, "approve this plan")
+        self.bus.emit(ev.PlanResolved(approved))
+        if approved:
+            self.set_mode(self._mode_before_plan)
+        return approved
 
     async def start(self) -> None:
         await self.connect_mcp()
@@ -225,6 +250,8 @@ class Session:
             return self._end("error", f"prompt blocked by a hook: {outcome.reason}")
         if outcome.context:
             self._add(Message("user", reminder("\n\n".join(outcome.context)), is_meta=True))
+        if self.permissions.mode == "plan":
+            self._add(Message("user", reminder(PLAN_MODE_NOTE), is_meta=True))
         self._add(Message("user", prompt))
 
         stop_blocks = 0

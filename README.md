@@ -4,7 +4,7 @@ A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
 slash commands first, a local browser window with panels (files, code and diffs,
 tasks, plan, token meter) later. One core library, thin front-ends.
 
-> **Work in progress.** Phases 1 to 4 are built and tested against a scripted
+> **Work in progress.** Phases 1 to 5 are built and tested against a scripted
 > model. No run against a live model has happened yet, so nothing here is stable
 > and everything may change without notice.
 
@@ -25,7 +25,7 @@ Each phase closes on a test, not on a date.
 
 ## State
 
-Phases 1 to 4 are built; phase 0 (the live spike) still waits on an API key.
+Phases 1 to 5 are built; phase 0 (the live spike) still waits on an API key.
 Every test runs without a network: a scripted provider plays the model, a fake
 stdio server plays MCP, a mocked transport plays the web.
 
@@ -79,12 +79,26 @@ stdio server plays MCP, a mocked transport plays the web.
   /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
   /commands /resume /clear /quit`, plus one per command file and per skill.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
+- `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
+  page, one websocket, the same `Session` as the terminal: chat with streamed
+  text, tool cards, a status bar (model, permission mode, context share, tokens
+  in, out and cached, request count), the task list ticking live, the last plan,
+  and approval dialogs (`y`, `a`, `n`; Esc stops a turn). Slash commands work in
+  the message box. The server binds to 127.0.0.1, refuses any `Host` header but
+  its own, refuses a websocket from another `Origin`, and needs a per-launch
+  token that travels in the address fragment, so it never reaches a log or a
+  `Referer`. A page that opens late gets the history and any open approval.
+  The API does not expose the plan's credit balance, so the bar counts requests.
+- Plan mode (`/plan`, `--mode plan`): only reading tools run; the model hands in
+  its plan with `ExitPlanMode`, and your yes returns to the mode you came from.
+- `spike/panel_demo.py`: the panel with a scripted model, for a look without a key.
 - `spike/real_mcp_check.py`: starts every configured MCP server, lists its tools,
   and sends one `search_knowledge` call through a real session.
 - `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
   on this machine and reports which of them fired and blocked.
 
-Not built yet: subagents, compaction, the browser panels (phases 5 to 7).
+Not built yet: file tree, code viewer and diffs (phase 6), subagents and
+compaction (phase 7).
 
 ## Use
 
@@ -92,6 +106,7 @@ Not built yet: subagents, compaction, the browser panels (phases 5 to 7).
 .venv/bin/mwm                     # interactive, in the current directory
 .venv/bin/mwm --mode acceptEdits  # file edits inside the project run without asking
 .venv/bin/mwm --resume last       # continue the newest session of this directory
+.venv/bin/mwm --web               # browser panel on 127.0.0.1:8765 (needs the web extra)
 .venv/bin/mwm -p "summarise README.md"
 ```
 

@@ -3,6 +3,7 @@
 mwm                        interactive session in the current directory
 mwm -p "question"          one headless turn; prints the answer, exit 0 on success
 mwm --resume last          continue the newest session of this directory
+mwm --web                  the same session in a local browser window (127.0.0.1 only)
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="project directory")
     parser.add_argument("--no-hooks", action="store_true", help="run without any hooks")
     parser.add_argument("--no-mcp", action="store_true", help="run without MCP servers")
+    parser.add_argument("--web", action="store_true", help="serve the browser panel")
+    parser.add_argument("--port", type=int, default=8765, help="panel port (default 8765)")
     parser.add_argument("--version", action="version", version=f"mwm-harness {__version__}")
     return parser.parse_args(argv)
 
@@ -80,6 +83,16 @@ async def run(args: argparse.Namespace) -> int:
         mcp=mcp,
     )
     holder.append(session)
+
+    if args.web:
+        try:
+            from mwm_harness.web.server import serve
+        except ImportError as exc:
+            raise ConfigError(
+                f"the panel needs the web extra: pip install 'mwm-harness[web]' ({exc})"
+            ) from exc
+        await serve(session, models, args.port)
+        return 0
 
     if not args.prompt:
         await repl(session, models)

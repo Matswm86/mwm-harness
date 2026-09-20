@@ -79,12 +79,34 @@ class UsageUpdated(Event):
 
     @property
     def context_fraction(self) -> float:
-        return self.prompt_tokens / self.context_window if self.context_window else 0.0
+        """Share of the window the next request starts with: last prompt plus last answer."""
+        used = self.prompt_tokens + self.completion_tokens
+        return used / self.context_window if self.context_window else 0.0
 
 
 @dataclass
 class TodosUpdated(Event):
     todos: list[dict[str, Any]]
+
+
+@dataclass
+class PlanProposed(Event):
+    plan: str
+
+
+@dataclass
+class PlanResolved(Event):
+    approved: bool
+
+
+@dataclass
+class ModeChanged(Event):
+    mode: str
+
+
+@dataclass
+class ModelChanged(Event):
+    model: str
 
 
 @dataclass

@@ -310,3 +310,36 @@ def test_resume_restores_history_and_repairs_unanswered_calls(make_session):
     assert ended.reason == "done"
     roles = [m["role"] for m in provider.requests[0]["messages"]]
     assert roles == ["system", "user", "assistant", "tool", "user"]
+
+
+def test_plan_mode_blocks_edits_until_the_plan_is_approved(make_session):
+    approver = FixedApprover(True)
+    turns = [
+        chunks_for(tool_calls=[("Write", {"file_path": "a.txt", "content": "x"})]),
+        chunks_for(tool_calls=[("ExitPlanMode", {"plan": "1. write a.txt"})]),
+        chunks_for(tool_calls=[("Write", {"file_path": "a.txt", "content": "x"})]),
+        chunks_for("written"),
+    ]
+    session, recorder, _ = make_session(turns, approver=approver, mode="acceptEdits")
+    session.set_mode("plan")
+    ended = run(session.send("make a.txt"))
+    assert ended.reason == "done"
+    results = tool_results(session)
+    assert results[0]["is_error"] and "Plan mode is on" in results[0]["content"]
+    assert "approved the plan" in results[1]["content"]
+    assert not results[2].get("is_error")
+    assert (session.cwd / "a.txt").read_text() == "x"
+    assert session.permissions.mode == "acceptEdits"  # back to the mode before /plan
+    assert recorder.of(ev.PlanProposed)[0].plan == "1. write a.txt"
+    assert [e.mode for e in recorder.of(ev.ModeChanged)] == ["plan", "acceptEdits"]
+    assert approver.asked[0][0] == "ExitPlanMode"
+
+
+def test_a_rejected_plan_keeps_plan_mode_on(make_session):
+    turns = [chunks_for(tool_calls=[("ExitPlanMode", {"plan": "p"})]), chunks_for("ok")]
+    session, recorder, _ = make_session(turns, approver=FixedApprover(False))
+    session.set_mode("plan")
+    run(session.send("plan it"))
+    assert tool_results(session)[0]["is_error"]
+    assert session.permissions.mode == "plan"
+    assert recorder.of(ev.PlanResolved)[0].approved is False

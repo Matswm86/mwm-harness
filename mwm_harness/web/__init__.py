@@ -1,0 +1,1 @@
+"""Browser panel front-end."""

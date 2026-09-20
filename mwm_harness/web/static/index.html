@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MWM Harness</title>
+<style>
+:root {
+  --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1f23; --dim: #6b7079; --line: #dcdad3;
+  --accent: #0f6e5c; --accent-ink: #ffffff; --warn: #9a5b00; --bad: #b3261e; --code: #efede6;
+  --user: #e7f1ee; --ok: #2f7d32;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --panel: #1d2024; --ink: #e6e4de; --dim: #8d939c; --line: #2f3338;
+    --accent: #4fc3a9; --accent-ink: #10201c; --warn: #e0a042; --bad: #ef7a72; --code: #24282d;
+    --user: #1f2c29; --ok: #7bc47f;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, sans-serif;
+  display: grid; grid-template-rows: auto 1fr; }
+code, pre, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: 13px; }
+header { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; padding: 8px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header .brand { font-weight: 700; letter-spacing: .04em; }
+header label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+header select { background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 13px; }
+.stat { font-variant-numeric: tabular-nums; font-size: 13px; }
+.stat b { font-weight: 600; }
+.meter { width: 120px; height: 8px; border-radius: 4px; background: var(--code); overflow: hidden;
+  display: inline-block; vertical-align: middle; margin: 0 6px; }
+.meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+.meter i.over { background: var(--warn); }
+#conn { margin-left: auto; font-size: 12px; color: var(--dim); }
+#conn.down { color: var(--bad); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; }
+#chatcol { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+#log { overflow-y: auto; padding: 18px 22px; }
+.msg { max-width: 900px; margin: 0 auto 14px; }
+.msg.user { background: var(--user); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; }
+.msg.assistant p { margin: 0 0 10px; white-space: pre-wrap; }
+.msg pre { background: var(--code); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 0 0 10px; }
+.msg code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+.msg pre code { padding: 0; background: none; }
+details { max-width: 900px; margin: 0 auto 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); }
+details > summary { cursor: pointer; padding: 6px 12px; font-size: 13px; list-style: none; display: flex; gap: 8px; }
+details > summary::before { content: "▸"; color: var(--dim); }
+details[open] > summary::before { content: "▾"; }
+details .body { padding: 0 12px 10px; }
+details pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+.tool .name { font-weight: 600; color: var(--accent); }
+.tool .brief { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.tool .state { font-size: 12px; color: var(--dim); }
+.tool.error { border-color: var(--bad); } .tool.error .state { color: var(--bad); }
+.tool.ok .state { color: var(--ok); }
+.reasoning summary { color: var(--dim); font-style: italic; }
+.note { max-width: 900px; margin: 0 auto 10px; font-size: 13px; padding: 6px 12px; border-left: 3px solid var(--warn);
+  color: var(--warn); white-space: pre-wrap; }
+.note.error, .note.block { border-color: var(--bad); color: var(--bad); }
+.note.info { border-color: var(--line); color: var(--dim); }
+.cmdout { max-width: 900px; margin: 0 auto 12px; }
+.cmdout pre { background: var(--code); padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; margin: 0; }
+form { display: flex; gap: 8px; padding: 12px 22px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+textarea { flex: 1; resize: none; min-height: 44px; max-height: 200px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; }
+textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px;
+  padding: 8px 14px; font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { border-color: var(--bad); color: var(--bad); }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 14px 16px; }
+aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 8px; }
+aside section { margin-bottom: 22px; }
+#tasks { list-style: none; margin: 0; padding: 0; }
+#tasks li { display: grid; grid-template-columns: 20px 1fr; gap: 4px; padding: 3px 0; font-size: 14px; }
+#tasks li.completed { color: var(--dim); text-decoration: line-through; }
+#tasks li.in_progress { font-weight: 600; }
+#tasks .mark { color: var(--accent); }
+#tasksum { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+#plan { white-space: pre-wrap; font-size: 13px; }
+#sessinfo { white-space: pre-wrap; word-break: break-all; }
+.empty { color: var(--dim); font-size: 13px; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink);
+  width: min(760px, 92vw); padding: 18px 20px; }
+dialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog h3 { margin: 0 0 4px; } dialog .why { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
+dialog pre { background: var(--code); padding: 10px 12px; border-radius: 8px; max-height: 50vh; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; }
+dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+kbd { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; opacity: .7; margin-left: 4px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">MWM Harness</span>
+  <span><label for="model">model</label> <select id="model"></select></span>
+  <span><label for="mode">mode</label> <select id="mode">
+    <option>default</option><option>acceptEdits</option><option>bypassPermissions</option><option>plan</option>
+  </select></span>
+  <span class="stat" title="last prompt plus last answer, as reported by the endpoint">ctx
+    <span class="meter"><i id="ctxbar"></i></span><b id="ctxpct">0.0%</b> <span id="ctxnum" class="mono"></span></span>
+  <span class="stat">in <b id="tin">0</b> · out <b id="tout">0</b> · cached <b id="tcached">0</b></span>
+  <span class="stat" title="model requests this session; the plan's credit balance is not exposed by the API">requests <b id="reqs">0</b></span>
+  <span id="conn">connecting</span>
+</header>
+<main>
+  <div id="chatcol">
+    <div id="log" aria-live="polite"></div>
+    <form id="form">
+      <textarea id="input" rows="1" placeholder="Message, or /help. Enter sends, Shift+Enter breaks the line, Esc stops a turn." autofocus></textarea>
+      <button type="button" id="stop" class="danger" hidden>Stop</button>
+      <button type="submit" class="primary">Send</button>
+    </form>
+  </div>
+  <aside>
+    <section><h2>Tasks</h2><div id="tasksum"></div><ul id="tasks"></ul></section>
+    <section><h2>Plan</h2><div id="plan" class="empty">No plan yet. /plan turns plan mode on.</div></section>
+    <section><h2>Session</h2><div id="sessinfo" class="empty mono"></div></section>
+  </aside>
+</main>
+<dialog id="approval">
+  <h3 id="aptitle"></h3><div class="why" id="apwhy"></div><pre id="apbody"></pre>
+  <div class="row">
+    <button id="apno" class="danger">No<kbd>n</kbd></button>
+    <button id="apalways">Always this session<kbd>a</kbd></button>
+    <button id="apyes" class="primary">Yes<kbd>y</kbd></button>
+  </div>
+</dialog>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || sessionStorage.getItem("mwm-token") || "";
+if (token) { try { sessionStorage.setItem("mwm-token", token); } catch (e) {} history.replaceState(null, "", location.pathname); }
+
+let ws = null, retry = 500, busy = false;
+let current = null;            // the assistant message being streamed
+let reasoning = null;          // the reasoning block being streamed
+const tools = new Map();       // tool_use_id -> card
+const approvals = [];          // queue of open approval requests
+
+const fmt = (n) => Number(n || 0).toLocaleString("en-US");
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function atBottom() { const l = $("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 80; }
+function add(node) { const stick = atBottom(); $("log").append(node); if (stick) $("log").scrollTop = $("log").scrollHeight; return node; }
+
+function renderMarkdown(target, text) {
+  target.replaceChildren();
+  const parts = text.split(/```/);
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const pre = el("pre"), code = el("code", null, part.replace(/^[\w+-]*\n/, ""));
+      pre.append(code); target.append(pre); return;
+    }
+    part.split(/\n{2,}/).forEach((para) => {
+      if (!para.trim()) return;
+      const p = el("p");
+      para.split(/(`[^`\n]+`)/).forEach((bit) => {
+        if (bit.length > 2 && bit.startsWith("`") && bit.endsWith("`")) p.append(el("code", null, bit.slice(1, -1)));
+        else p.append(document.createTextNode(bit));
+      });
+      target.append(p);
+    });
+  });
+}
+
+function userMessage(text) { add(el("div", "msg user", text)); }
+function assistantText(text) {
+  if (!current) { current = add(el("div", "msg assistant")); current.dataset.raw = ""; }
+  current.dataset.raw += text;
+  const stick = atBottom(); renderMarkdown(current, current.dataset.raw);
+  if (stick) $("log").scrollTop = $("log").scrollHeight;
+}
+function reasoningText(text) {
+  if (!reasoning) {
+    reasoning = add(el("details", "reasoning"));
+    reasoning.append(el("summary", null, "reasoning"));
+    const body = el("div", "body"); body.append(el("pre")); reasoning.append(body);
+  }
+  reasoning.querySelector("pre").textContent += text;
+}
+function brief(name, input) {
+  if (!input) return "";
+  return String(input.command || input.file_path || input.pattern || input.url || input.query || input.skill
+    || JSON.stringify(input)).slice(0, 200);
+}
+function toolStarted(id, name, input) {
+  current = null; reasoning = null;
+  const card = el("details", "tool");
+  const summary = el("summary");
+  summary.append(el("span", "name", name), el("span", "brief mono", brief(name, input)), el("span", "state", "running"));
+  const body = el("div", "body");
+  body.append(el("pre", "input", JSON.stringify(input, null, 2)), el("pre", "result"));
+  card.append(summary, body); tools.set(id, card); add(card);
+}
+function toolFinished(id, content, isError) {
+  const card = tools.get(id); if (!card) return;
+  card.classList.add(isError ? "error" : "ok");
+  card.querySelector(".state").textContent = isError ? "error" : "done";
+  card.querySelector(".result").textContent = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+}
+function note(level, text) { current = null; add(el("div", "note " + level, text)); }
+
+function setTodos(todos) {
+  const list = $("tasks"); list.replaceChildren();
+  const marks = { pending: "○", in_progress: "◐", completed: "●" };
+  (todos || []).forEach((t) => {
+    const li = el("li", t.status);
+    li.append(el("span", "mark", marks[t.status] || "?"),
+      el("span", null, t.status === "in_progress" && t.activeForm ? t.activeForm : t.content));
+    list.append(li);
+  });
+  const done = (todos || []).filter((t) => t.status === "completed").length;
+  $("tasksum").textContent = todos && todos.length ? `${done} of ${todos.length} done` : "No tasks yet.";
+}
+function setPlan(plan) {
+  const box = $("plan");
+  if (plan) { box.className = ""; box.textContent = plan; } else { box.className = "empty"; box.textContent = "No plan yet. /plan turns plan mode on."; }
+}
+function setUsage(u) {
+  if (!u) return;
+  const pct = (u.context_fraction || 0) * 100;
+  $("ctxpct").textContent = pct.toFixed(1) + "%";
+  $("ctxnum").textContent = `${fmt(u.context_used)} / ${fmt(u.context_window)}`;
+  const bar = $("ctxbar"); bar.style.width = Math.min(100, pct) + "%";
+  bar.className = u.context_used >= u.soft_budget ? "over" : "";
+  $("tin").textContent = fmt(u.prompt_tokens); $("tout").textContent = fmt(u.completion_tokens);
+  $("tcached").textContent = fmt(u.cached_tokens); $("reqs").textContent = fmt(u.requests);
+}
+function setBusy(value) { busy = value; $("stop").hidden = !value; }
+
+function showApproval() {
+  const dialog = $("approval"), request = approvals[0];
+  if (!request) { if (dialog.open) dialog.close(); return; }
+  const isPlan = request.tool === "ExitPlanMode";
+  $("aptitle").textContent = isPlan ? "Approve this plan?" : `Approve ${request.tool}?`;
+  $("apwhy").textContent = request.reason || "";
+  const input = request.input || {};
+  $("apbody").textContent = isPlan ? input.plan : (request.tool === "Bash" ? input.command : JSON.stringify(input, null, 2));
+  $("apalways").hidden = isPlan;
+  if (!dialog.open) dialog.showModal();
+}
+function answer(value) {
+  const request = approvals.shift(); if (!request) return;
+  send({ type: "approval", id: request.id, answer: value }); showApproval();
+}
+
+function loadState(s) {
+  $("log").replaceChildren(); tools.clear(); current = null; reasoning = null;
+  const model = $("model"); model.replaceChildren();
+  s.models.forEach((m) => model.append(new Option(m, m, false, m === s.model)));
+  $("mode").value = s.mode;
+  $("sessinfo").textContent = `${s.cwd}\nsession ${s.session_id.slice(0, 8)}\nshell sandbox ${s.sandbox ? "on" : "OFF"}`;
+  s.history.forEach((m) => m.blocks.forEach((b) => {
+    if (b.type === "text" && m.role === "user") userMessage(b.text);
+    else if (b.type === "text") { current = null; assistantText(b.text); current = null; }
+    else if (b.type === "tool_use") toolStarted(b.id, b.name, b.input);
+    else if (b.type === "tool_result") toolFinished(b.tool_use_id, b.content, !!b.is_error);
+  }));
+  setTodos(s.todos); setPlan(s.plan); setUsage(s.usage); setBusy(s.busy);
+  approvals.length = 0; s.approvals.forEach((a) => approvals.push(a)); showApproval();
+}
+
+const handlers = {
+  State: loadState,
+  TurnStarted: (e) => { setBusy(true); current = null; reasoning = null; userMessage(e.prompt); },
+  TextDelta: (e) => { reasoning = null; assistantText(e.text); },
+  ReasoningDelta: (e) => reasoningText(e.text),
+  ToolStarted: (e) => toolStarted(e.tool_use_id, e.name, e.input),
+  ToolFinished: (e) => toolFinished(e.tool_use_id, e.content, e.is_error),
+  HookBlocked: (e) => note("block", `[${e.event} hook blocked] ${e.reason}`),
+  Notice: (e) => note(e.level, e.text),
+  UsageUpdated: setUsage,
+  TodosUpdated: (e) => setTodos(e.todos),
+  PlanProposed: (e) => setPlan(e.plan),
+  PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
+  ModeChanged: (e) => { $("mode").value = e.mode; },
+  ModelChanged: (e) => { $("model").value = e.model; },
+  TurnEnded: (e) => { setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); },
+  ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
+  ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
+  CommandOutput: (e) => { const box = el("div", "cmdout"); box.append(el("pre", null, `${e.command}\n${e.text}`)); add(box); },
+};
+
+function send(message) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(message)); }
+function connect() {
+  if (!token) { $("conn").textContent = "no access token: open the address printed by mwm --web"; $("conn").className = "down"; return; }
+  ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.onopen = () => { retry = 500; $("conn").textContent = "connected"; $("conn").className = ""; };
+  ws.onmessage = (m) => { const e = JSON.parse(m.data); const h = handlers[e.type]; if (h) h(e); };
+  ws.onclose = () => { $("conn").textContent = "disconnected, retrying"; $("conn").className = "down";
+    setTimeout(connect, retry); retry = Math.min(retry * 2, 8000); };
+}
+
+$("form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const box = $("input"), text = box.value.trim(); if (!text) return;
+  send({ type: "prompt", text }); box.value = ""; box.style.height = "auto";
+});
+$("input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("form").requestSubmit(); }
+});
+$("input").addEventListener("input", (event) => { const b = event.target; b.style.height = "auto"; b.style.height = Math.min(200, b.scrollHeight) + "px"; });
+$("stop").addEventListener("click", () => send({ type: "cancel" }));
+$("model").addEventListener("change", (event) => send({ type: "prompt", text: "/model " + event.target.value }));
+$("mode").addEventListener("change", (event) => send({ type: "prompt", text: "/mode " + event.target.value }));
+$("apyes").addEventListener("click", () => answer("yes"));
+$("apalways").addEventListener("click", () => answer("always"));
+$("apno").addEventListener("click", () => answer("no"));
+$("approval").addEventListener("cancel", (event) => event.preventDefault());  // Esc must not dismiss an open question
+document.addEventListener("keydown", (event) => {
+  if ($("approval").open) {
+    if (event.key === "y") answer("yes"); else if (event.key === "n") answer("no");
+    else if (event.key === "a" && !$("apalways").hidden) answer("always");
+    return;
+  }
+  if (event.key === "Escape" && busy) send({ type: "cancel" });
+});
+connect();
+</script>
+</body>
+</html>

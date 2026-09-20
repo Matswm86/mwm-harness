@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -24,6 +25,7 @@ class ToolContext:
     output_cap: int = 30_000
     read_files: set[Path] = field(default_factory=set)
     todos: list[dict[str, Any]] = field(default_factory=list)
+    plan_handler: Callable[[str], Awaitable[bool]] | None = None  # set by the session
 
     def resolve(self, file_path: str) -> Path:
         path = Path(file_path).expanduser()

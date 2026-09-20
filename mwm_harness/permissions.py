@@ -4,6 +4,7 @@ Modes (names match Claude Code's, because hooks receive ``permission_mode``):
     default            read-only tools run, everything else asks
     acceptEdits        Write/Edit inside the project also run; Bash still asks
     bypassPermissions  everything runs, except the deny list
+    plan               only reading tools run, until the person approves a plan
 
 The deny list holds actions that have cost real data or money before. It is
 checked on the final tool input, after any hook has rewritten it.
@@ -18,7 +19,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
-MODES = ("default", "acceptEdits", "bypassPermissions")
+MODES = ("default", "acceptEdits", "bypassPermissions", "plan")
 READ_ONLY_TOOLS = {"Read", "Glob", "Grep", "TodoWrite"}
 EDIT_TOOLS = {"Write", "Edit"}
 QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
@@ -145,9 +146,17 @@ class Permissions:
         rule = self.denied(tool_name, tool_input)
         if rule:
             return Decision("deny", f"Denied by the hard deny list ({rule.id}): {rule.why}.")
-        if read_only or tool_name in READ_ONLY_TOOLS or tool_name in self.session_allow:
+        if read_only or tool_name in READ_ONLY_TOOLS:
             return Decision("allow")
         if any(fnmatchcase(tool_name, pattern) for pattern in self.allow_patterns):
+            return Decision("allow")
+        if self.mode == "plan":
+            return Decision(
+                "deny",
+                "Plan mode is on: only reading tools run. Finish the research, then call "
+                "ExitPlanMode with the plan and wait for the person's answer.",
+            )
+        if tool_name in self.session_allow:
             return Decision("allow")
         if self.mode == "bypassPermissions":
             return Decision("allow")
