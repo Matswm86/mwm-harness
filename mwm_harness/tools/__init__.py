@@ -2,6 +2,7 @@
 
 from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 from mwm_harness.tools.files import Edit, Glob, Grep, Read, Write
+from mwm_harness.tools.judge import Judge
 from mwm_harness.tools.plan import ExitPlanMode
 from mwm_harness.tools.shell import Bash
 from mwm_harness.tools.todo import TodoWrite
@@ -20,6 +21,7 @@ def default_tools(web_allow_private: bool = False) -> dict[str, Tool]:
         ExitPlanMode(),
         WebFetch(web_allow_private),
         WebSearch(),
+        Judge(),
     ]
     return {tool.name: tool for tool in tools}
 

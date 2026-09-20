@@ -15,6 +15,7 @@ from typing import Any
 
 from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec
+from mwm_harness.jev import format_report, report
 from mwm_harness.loop import Session
 from mwm_harness.permissions import MODES
 from mwm_harness.preview import OutsideProject, preview_change, read_file
@@ -39,6 +40,7 @@ HELP = """\
 /files                files the tools have read or written this session
 /open PATH            show a project file with line numbers
 /agents               subagents the model can start with the Task tool
+/jev                  Jev's decision log: calls, known outcomes, hit rate per domain
 /compact [focus]      replace the history with a summary written by the model
 /init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
@@ -212,6 +214,8 @@ def run_command(
         out.line(f"{len(session.agents)} agents")
     elif name == "/init":
         return INIT_PROMPT + (f"\n\nExtra instructions: {argument}" if argument else "")
+    elif name == "/jev":
+        out.line(format_report(report()))
     elif name == "/files":
         for path in session.touched:
             out.line(f"  {path}")
