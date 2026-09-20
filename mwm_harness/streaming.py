@@ -88,8 +88,12 @@ class StreamAssembler:
         function = fragment.get("function") or {}
         if function.get("name"):
             call.name = function["name"]
-        if function.get("arguments"):
-            call.arguments.append(function["arguments"])
+        arguments = function.get("arguments")
+        if arguments:
+            # Some endpoints send the arguments already parsed instead of as string pieces.
+            call.arguments.append(
+                arguments if isinstance(arguments, str) else json.dumps(arguments)
+            )
 
     def finish(self) -> AssembledTurn:
         calls = [self._finish_call(index, self._calls[index]) for index in sorted(self._calls)]

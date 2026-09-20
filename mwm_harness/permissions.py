@@ -22,6 +22,7 @@ from typing import Any
 MODES = ("default", "acceptEdits", "bypassPermissions", "plan")
 READ_ONLY_TOOLS = {"Read", "Glob", "Grep", "TodoWrite"}
 EDIT_TOOLS = {"Write", "Edit"}
+READ_PATH_KEYS = {"Read": "file_path", "Glob": "path", "Grep": "path"}
 QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 
 
@@ -32,6 +33,7 @@ class DenyRule:
     bash: str = ""  # regex searched in a Bash command
     path: str = ""  # regex searched in a Write/Edit file path
     tool: str = ""  # regex matched against the whole tool name
+    read: str = ""  # regex searched in the resolved path a Read/Glob/Grep call names
     strip_quotes: bool = False  # match the command with quoted text removed (commit messages)
 
 
@@ -55,7 +57,30 @@ BUILTIN_DENY = (
     DenyRule(
         "rm-root-or-home",
         "recursive delete of the filesystem root or the home directory",
-        bash=r"\brm\s+(-\w+\s+)*-\w*[rR]\w*\s+(-\w+\s+)*(/|~|\$HOME|/home/?\w*)/?(\s|$)",
+        bash=r"\brm\s+(-{1,2}[\w-]+\s+)*(-\w*[rR]\w*|--recursive)\s+(-{1,2}[\w-]+\s+)*"
+        r"(/|~|\$HOME|/home/?\w*)/?(\s|$|['\"])",
+    ),
+    DenyRule(
+        "find-delete-root-or-home",
+        "find -delete over the filesystem root or the home directory",
+        bash=r"\bfind\s+(/|~|\$HOME|/home/?\w*)/?\s[^|;&]*(-delete\b|-exec\s+rm\b)",
+    ),
+    DenyRule(
+        "git-hooks-off",
+        "commits go through the pre-commit hooks (core.hooksPath switches them off)",
+        bash=r"\bgit\b[^|;&]*core\.hookspath|\bGIT_CONFIG[\w]*=[^\s]*hookspath",
+    ),
+    DenyRule(
+        "decode-into-shell",
+        "a command that is decoded and piped into a shell hides from every rule here",
+        bash=r"\b(base64\s+(-d|--decode)|xxd\s+-r|openssl\s+enc\s+-d)\b[^;&]*\|\s*(ba|z|da)?sh\b",
+    ),
+    DenyRule(
+        "secret-files",
+        "key material and credential stores are never read into a model's context",
+        read=r"/\.ssh/|/\.gnupg/|/\.aws/|/\.config/mwm-harness/secrets\.env$|/\.qwen/settings\.json$"
+        r"|/\.config/gh/hosts\.yml$|/\.netrc$|/\.git-credentials$",
+        bash=r"(/|~|\$HOME)[^\s|;&]*(\.ssh/id_|secrets\.env|\.git-credentials|\.netrc)|/proc/\w+/environ",
     ),
     DenyRule(
         "vector-collection-delete",
@@ -65,7 +90,9 @@ BUILTIN_DENY = (
     DenyRule(
         "vector-brain-delete-tool",
         "nothing is ever deleted from a vector-brain collection",
-        tool=r"mcp__.*vector.*__delete_.*",
+        # Keyed on what the tool does, not on the server's name: renaming the server
+        # entry in .mcp.json must not lift the rule. Other delete tools still ask.
+        tool=r"mcp__.+__(delete|drop|wipe|purge)_(source|collection|point|vector|index)s?\b.*",
     ),
     DenyRule(
         "broker-mutation",
@@ -75,7 +102,7 @@ BUILTIN_DENY = (
     DenyRule(
         "broker-mutation-tool",
         "the harness never places, changes or cancels broker orders",
-        tool=r"mcp__.*topstep.*__(place|cancel|modify|close|flatten).*",
+        tool=r"mcp__.+__(place|cancel|modify|close|flatten)_?(order|position|bracket|all).*",
     ),
     DenyRule(
         "curated-inbox",
@@ -107,15 +134,22 @@ class Permissions:
         project: Path,
         extra_deny: tuple[DenyRule, ...] = (),
         allow_patterns: tuple[str, ...] = (),
+        read_roots: tuple[Path, ...] = (),
     ) -> None:
         self.set_mode(mode)
         self.allow_patterns = allow_patterns
         self.project = project.resolve()
+        self.read_roots = (self.project, *(root.resolve() for root in read_roots))
         self.rules = BUILTIN_DENY + extra_deny
         self._compiled = {
             rule.id: {
                 kind: re.compile(pattern, re.IGNORECASE)
-                for kind, pattern in (("bash", rule.bash), ("path", rule.path), ("tool", rule.tool))
+                for kind, pattern in (
+                    ("bash", rule.bash),
+                    ("path", rule.path),
+                    ("tool", rule.tool),
+                    ("read", rule.read),
+                )
                 if pattern
             }
             for rule in self.rules
@@ -130,6 +164,7 @@ class Permissions:
     def denied(self, tool_name: str, tool_input: dict[str, Any]) -> DenyRule | None:
         command = str(tool_input.get("command") or "") if tool_name == "Bash" else ""
         file_path = str(tool_input.get("file_path") or "") if tool_name in EDIT_TOOLS else ""
+        read_path = str(self._read_target(tool_name, tool_input) or "")
         for rule in self.rules:
             compiled = self._compiled[rule.id]
             if "tool" in compiled and compiled["tool"].fullmatch(tool_name):
@@ -140,13 +175,40 @@ class Permissions:
                     return rule
             if file_path and "path" in compiled and compiled["path"].search(file_path):
                 return rule
+            if read_path and "read" in compiled and compiled["read"].search(read_path):
+                return rule
+            # An edit of a secret file is as bad as a read of it.
+            if file_path and "read" in compiled:
+                resolved = str((self.project / Path(file_path).expanduser()).resolve())
+                if compiled["read"].search(resolved):
+                    return rule
         return None
+
+    def _read_target(self, tool_name: str, tool_input: dict[str, Any]) -> Path | None:
+        """The resolved file or folder a reading tool is pointed at; None = the project."""
+        if tool_name not in READ_PATH_KEYS:
+            return None
+        raw = str(tool_input.get(READ_PATH_KEYS[tool_name]) or "")
+        if not raw:
+            return None
+        return (self.project / Path(raw).expanduser()).resolve()
+
+    def _readable(self, target: Path) -> bool:
+        return any(target == root or root in target.parents for root in self.read_roots)
 
     def decide(self, tool_name: str, tool_input: dict[str, Any], read_only: bool) -> Decision:
         rule = self.denied(tool_name, tool_input)
         if rule:
             return Decision("deny", f"Denied by the hard deny list ({rule.id}): {rule.why}.")
         if read_only or tool_name in READ_ONLY_TOOLS:
+            # Reading is free inside the project and the declared read roots. Anywhere
+            # else on the disk the person is asked: a hostile page or tool result can
+            # steer a model into reading private files and sending them out.
+            target = self._read_target(tool_name, tool_input)
+            if target is not None and not self._readable(target):
+                if self.mode == "bypassPermissions" or tool_name in self.session_allow:
+                    return Decision("allow")
+                return Decision("ask", f"{target} is outside the project and its read roots")
             return Decision("allow")
         if any(fnmatchcase(tool_name, pattern) for pattern in self.allow_patterns):
             return Decision("allow")

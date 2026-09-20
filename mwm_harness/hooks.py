@@ -218,6 +218,12 @@ def _merge(
     if data is None:
         if event in CONTEXT_EVENTS:
             outcome.context.append(text)
+        elif text.startswith("{"):
+            # It tried to answer in JSON and failed: a gate that meant to block did not.
+            outcome.notices.append(
+                f"hook {label} exited 0 but its output is not valid JSON, so it decided "
+                f"nothing: {text[:200]!r}"
+            )
         return
     if data.get("systemMessage"):
         outcome.notices.append(str(data["systemMessage"]))

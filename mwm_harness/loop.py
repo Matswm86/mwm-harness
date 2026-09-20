@@ -18,7 +18,7 @@ from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolv
 from mwm_harness.config import ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.hooks import HookEngine, load_registrations
-from mwm_harness.mcp_client import McpManager
+from mwm_harness.mcp_client import HARNESS_SECRET_ENV, McpManager
 from mwm_harness.messages import (
     Block,
     Message,
@@ -134,13 +134,20 @@ class Session:
             for message in self.messages:
                 self.transcript.append(message)
         self.meter = ContextMeter(model.context_window, model.soft_budget)
+        HARNESS_SECRET_ENV.update(spec.key_env for spec in self.models.values())
+        scratch = self.transcript.path.with_suffix("") / "scratch"
         self.permissions = Permissions(
             self.settings.permission_mode,
             self.cwd,
             load_extra_deny(config_dir() / "deny.toml"),
             tuple(self.settings.mcp_allow),
+            read_roots=(
+                workspace_root(),
+                scratch,
+                *(Path(p).expanduser() for p in self.settings.extra_writable),
+                *(Path(p).expanduser() for p in self.settings.extra_readable),
+            ),
         )
-        scratch = self.transcript.path.with_suffix("") / "scratch"
         writable = [
             self.cwd,
             scratch,
@@ -150,7 +157,12 @@ class Session:
         self.tool_ctx = ToolContext(
             cwd=self.cwd,
             scratch=scratch,
-            sandbox=Sandbox(self.settings.sandbox, writable),
+            sandbox=Sandbox(
+                self.settings.sandbox,
+                writable,
+                secret_env=frozenset(spec.key_env for spec in self.models.values()),
+                env_keep=frozenset(self.settings.bash_env_keep),
+            ),
             output_cap=self.settings.tool_output_cap,
         )
         self._hook_settings_arg = hook_settings
@@ -230,6 +242,8 @@ class Session:
         return approved
 
     async def start(self) -> None:
+        if self.tool_ctx.sandbox.warning:
+            self.bus.emit(ev.Notice("warn", self.tool_ctx.sandbox.warning))
         await self.connect_mcp()
         outcome = await self.hooks.run(
             "SessionStart", source="resume" if self.resumed else "startup"

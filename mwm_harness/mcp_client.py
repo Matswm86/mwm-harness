@@ -34,6 +34,17 @@ START_TIMEOUT = 60.0
 STDIO_LINE_LIMIT = 64 * 1024 * 1024  # one JSON-RPC message may carry a base64 image
 
 
+# Names of the harness's own model keys; the Session fills this in. A server keeps the
+# rest of the environment (it is a program the person configured and may need its own
+# keys), but it has no business holding the keys that pay for the model.
+HARNESS_SECRET_ENV: set[str] = {"TYPESAFE_API_KEY"}
+
+
+def server_env(configured: dict[str, str]) -> dict[str, str]:
+    inherited = {k: v for k, v in os.environ.items() if k not in HARNESS_SECRET_ENV}
+    return {**inherited, **configured}
+
+
 class McpError(Exception):
     """A server could not be reached, or answered with a JSON-RPC error."""
 
@@ -129,7 +140,7 @@ class StdioConnection:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=stderr,
-                env={**os.environ, **self.config.env},
+                env=server_env(self.config.env),
                 cwd=self.config.cwd,
                 limit=STDIO_LINE_LIMIT,
                 start_new_session=True,  # Ctrl-C in the terminal must not kill the server

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -42,8 +43,34 @@ def bwrap_works() -> bool:
     return probe.returncode == 0
 
 
+# A shell command is written by a model that may have just read a hostile page. It
+# gets no API keys: names that look like secrets are dropped from its environment.
+SECRET_ENV = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY)", re.I)
+# Hidden from a sandboxed command altogether (an empty tmpfs is mounted over each).
+PRIVATE_DIRS = (".ssh", ".gnupg", ".aws", ".config/mwm-harness", ".config/gh", ".qwen")
+
+
+def scrubbed_env(
+    secret_env: frozenset[str] = frozenset(), keep: frozenset[str] = frozenset()
+) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name in keep or not (name in secret_env or SECRET_ENV.search(name))
+    }
+
+
 class Sandbox:
-    def __init__(self, mode: str, writable: list[Path]) -> None:
+    def __init__(
+        self,
+        mode: str,
+        writable: list[Path],
+        secret_env: frozenset[str] = frozenset(),
+        env_keep: frozenset[str] = frozenset(),
+    ) -> None:
+        self.mode = mode
+        self.secret_env = secret_env
+        self.env_keep = env_keep
         if mode not in ("auto", "bwrap", "off"):
             raise ValueError(f"sandbox mode must be auto, bwrap or off, got {mode!r}")
         available = bwrap_works() if mode != "off" else False
@@ -52,10 +79,26 @@ class Sandbox:
         self.enabled = available
         self.writable = [p.resolve() for p in writable]
 
+    @property
+    def warning(self) -> str:
+        """Set when ``auto`` fell back to no sandbox: that must never pass in silence."""
+        if self.enabled or self.mode == "off":
+            return ""
+        return (
+            "bubblewrap does not run here, so shell commands run with NO sandbox "
+            '(sandbox = auto). Install bubblewrap, or set sandbox = "off" to accept this'
+        )
+
     def argv(self, command: str) -> list[str]:
         if not self.enabled:
             return ["bash", "-c", command]
         argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        for name in PRIVATE_DIRS:
+            private = Path.home() / name
+            if private.is_dir() and not any(
+                w == private or private in w.parents for w in self.writable
+            ):
+                argv += ["--tmpfs", str(private)]
         for path in self.writable:
             if path.exists():
                 argv += ["--bind", str(path), str(path)]
@@ -65,6 +108,7 @@ class Sandbox:
         process = await asyncio.create_subprocess_exec(
             *self.argv(command),
             cwd=str(cwd),
+            env=scrubbed_env(self.secret_env, self.env_keep),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
