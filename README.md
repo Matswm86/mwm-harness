@@ -138,6 +138,39 @@ permission mode, sandbox, extra writable paths, hook settings files, `mcp_allow`
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
 `hooks.json` (hooks in the `settings.json` format).
 
+## Reasoning playbooks, the critic, and the eval
+
+A smaller model writes and debugs well and still misses what a careful reviewer
+catches: a claim nobody ran, a search that came back empty for the wrong reason,
+two changes credited to one. The harness carries that part as procedure.
+
+- Four playbooks ship as skills and need no setup: `reason-predelivery` (grade
+  every claim as ran / read / recalled / guessed before answering), `reason-debug`
+  (reproduce, three hypotheses with a disproving check each, stop after two failed
+  fixes), `reason-audit` (inventory and blast radius before judgement, findings
+  with evidence, coverage count), `reason-challenge` (argue the other side, name
+  the kill test, state confidence as a size). A skill of the same name in your
+  own skill folders replaces the shipped one.
+- The `critic` agent is a read-only second reader with a fixed five-question
+  checklist and a `PASS | REVISE | BLOCK` verdict. It asks for the model tier
+  `critic`; map it to another model family than the writer in `settings.toml`
+  (`[agent_models]` `critic = "..."`), because a model that reviews its own work
+  shares its blind spots. Unmapped, it runs on the parent model with a warning.
+- `evals/cases.toml` holds 52 situations, each an ordinary request with one trap
+  in its facts, all taken from real incidents and rewritten without names. Run:
+
+```bash
+.venv/bin/mwm-eval --model qwen3.8-max --arms bare,playbooks
+.venv/bin/mwm-eval --model qwen3.8-max --arms critic --critic kimi-k2.7-code
+.venv/bin/mwm-eval --model "cmd:some-cli -p" --judge glm-5.2   # any CLI that reads stdin
+.venv/bin/mwm-eval --compare evals/out/*.jsonl
+```
+
+  Without `--judge` a regex grader runs: repeatable and offline, and crude (it
+  can miss a correct reply worded unusually). With 52 cases the 95 % interval on
+  a pass rate is about 13 points either side, so only large gaps mean anything.
+  Single turn, no tools: it measures noticing, not agent behaviour.
+
 ## Setup
 
 ```bash
