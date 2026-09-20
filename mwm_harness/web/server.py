@@ -29,7 +29,7 @@ from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec
 from mwm_harness.loop import Session
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
-from mwm_harness.repl.terminal import run_command
+from mwm_harness.repl.terminal import run_async_command, run_command
 
 STATIC = Path(__file__).parent / "static"
 POLICY_VIOLATION = 1008
@@ -210,12 +210,19 @@ class Panel:
                 {"type": "CommandOutput", "command": text, "text": "close the tab; Ctrl-C ends mwm"}
             )
             return ""
-        if words[0] == "/mcp" and "refresh" in words[1:]:
-            await self.session.connect_mcp(refresh=True)
         if words[0] == "/open" and len(words) > 1:
             await self.handle({"type": "open", "path": text.split(None, 1)[1]}, reply)
             return ""
         out = CapturedOutput()
+        if self.busy and words[0] == "/compact":
+            out.line("a turn is running; /compact works between turns")
+        elif await run_async_command(self.session, text, out):
+            self.broadcast(self.state())
+        if out.rows:
+            reply.put_nowait(
+                {"type": "CommandOutput", "command": text, "text": "\n".join(out.rows)}
+            )
+            return ""
         outcome = run_command(self.session, self.models, text, out)  # type: ignore[arg-type]
         if out.rows:
             reply.put_nowait(

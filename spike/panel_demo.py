@@ -78,6 +78,7 @@ async def main(port: int) -> None:
             system_prompt="demo",
             skills={},
             commands={},
+            agents={},
         )
         token = os.environ.get("PANEL_DEMO_TOKEN", "demo")
         app = create_app(session, MODELS, token, port)

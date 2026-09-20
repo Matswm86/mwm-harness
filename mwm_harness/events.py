@@ -90,6 +90,27 @@ class TodosUpdated(Event):
 
 
 @dataclass
+class SubagentStarted(Event):
+    agent: str
+    model: str
+    prompt: str
+
+
+@dataclass
+class SubagentFinished(Event):
+    agent: str
+    reason: str
+    tool_calls: int
+
+
+@dataclass
+class Compacted(Event):
+    trigger: str  # manual | auto
+    summary: str
+    messages_before: int
+
+
+@dataclass
 class FilesTouched(Event):
     """Project files the tools have read or written this session, newest last."""
 

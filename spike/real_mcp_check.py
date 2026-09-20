@@ -74,6 +74,7 @@ async def main(query: str) -> int:
                 mcp=manager,
                 skills={},
                 commands={},
+                agents={},
             )
             await session.start()
             started = time.monotonic()

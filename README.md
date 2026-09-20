@@ -4,7 +4,7 @@ A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
 slash commands first, a local browser window with panels (files, code and diffs,
 tasks, plan, token meter) later. One core library, thin front-ends.
 
-> **Work in progress.** Phases 1 to 6 are built and tested against a scripted
+> **Work in progress.** Phases 1 to 7 are built and tested against a scripted
 > model. No run against a live model has happened yet, so nothing here is stable
 > and everything may change without notice.
 
@@ -25,7 +25,7 @@ Each phase closes on a test, not on a date.
 
 ## State
 
-Phases 1 to 6 are built; phase 0 (the live spike) still waits on an API key.
+Phases 1 to 7 are built; phase 0 (the live spike) still waits on an API key.
 Every test runs without a network: a scripted provider plays the model, a fake
 stdio server plays MCP, a mocked transport plays the web.
 
@@ -77,7 +77,7 @@ stdio server plays MCP, a mocked transport plays the web.
   slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
-  /commands /plan /files /open /resume /clear /quit`, plus one per command file and per skill.
+  /commands /plan /files /open /agents /compact /init /resume /clear /quit`, plus one per command file and per skill.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
 - `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
   page, one websocket, the same `Session` as the terminal: chat with streamed
@@ -96,15 +96,31 @@ stdio server plays MCP, a mocked transport plays the web.
   touching the disk and shown as a side-by-side diff; the terminal prompt prints
   the same change as a unified diff. Browsing answers only for paths inside the
   project: `..`, absolute paths and symlinks that lead out are refused.
+- `agents.py`: subagents. `agents/<name>.md` files (frontmatter `name`,
+  `description`, `tools`, `model`, then the agent's system prompt) load from
+  `.claude/agents` (project, workspace, home). The `Task` tool runs one as a child
+  session: own history and transcript, only the tools its file lists (patterns
+  such as `mcp__server__*` work), never `Task` itself, the parent's permission
+  rules, approver and tool hooks, no Stop hooks. Only the final report returns.
+  `agent_models` in `settings.toml` maps a file's `model:` word to a configured
+  model (`opus = "qwen3.8-max"`); an unmapped word runs on the parent's model and
+  says so. Stopping the parent turn stops the agent and kills its command.
+- Compaction: at the model's soft budget (or on `/compact [focus]`) the model
+  writes a summary that replaces the history; the `PostCompact` hooks fire with
+  the summary; `--resume` starts from the last summary. A failed summary keeps
+  the history. `auto_compact = false` switches the automatic part off.
 - Plan mode (`/plan`, `--mode plan`): only reading tools run; the model hands in
   its plan with `ExitPlanMode`, and your yes returns to the mode you came from.
 - `spike/panel_demo.py`: the panel with a scripted model, for a look without a key.
+- `spike/real_agents_check.py`: loads the agent, skill and command files of this
+  machine and lists tool names no harness tool or MCP server provides.
 - `spike/real_mcp_check.py`: starts every configured MCP server, lists its tools,
   and sends one `search_knowledge` call through a real session.
 - `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
   on this machine and reports which of them fired and blocked.
 
-Not built yet: subagents and compaction (phase 7).
+Never run against a live model: everything above. Phase 7 closes when a subagent
+on another model returns and a long session compacts at its budget and continues.
 
 ## Use
 

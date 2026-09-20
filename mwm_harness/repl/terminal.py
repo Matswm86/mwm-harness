@@ -38,9 +38,35 @@ HELP = """\
 /commands             command files; /NAME [arguments] runs one
 /files                files the tools have read or written this session
 /open PATH            show a project file with line numbers
+/agents               subagents the model can start with the Task tool
+/compact [focus]      replace the history with a summary written by the model
+/init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
 /clear                forget the conversation (the transcript file is kept)
 /quit                 leave"""
+
+
+INIT_PROMPT = """\
+Study this project (README, build and test configuration, source layout, existing rule files) \
+and write AGENTS.md in the project root: what the project is, how to build, test and lint it \
+(exact commands), the code conventions that are visible in the source, and anything a newcomer \
+would get wrong. Under 60 lines, facts only, nothing generic. If AGENTS.md exists, improve it."""
+
+
+async def run_async_command(session: Session, text: str, out: Any) -> bool:
+    """Slash commands that have to await something. Returns True when ``text`` was one."""
+    name, _, argument = text.partition(" ")
+    if name == "/compact":
+        before = len(session.messages)
+        summary = await session.compact("manual", argument.strip())
+        if summary:
+            out.line(f"compacted {before} messages into a summary of {len(summary):,} characters")
+        elif not before:
+            out.line("nothing to compact")
+        return True
+    if name == "/mcp" and "refresh" in argument.split():
+        await session.connect_mcp(refresh=True)
+    return False
 
 
 class Printer:
@@ -179,6 +205,13 @@ def run_command(
     elif name == "/resume":
         for path in list_sessions(session.cwd)[:15]:
             out.line(f"  {path.stem}  ({path.stat().st_size:,} bytes)")
+    elif name == "/agents":
+        for agent in session.agents.values():
+            tools = ", ".join(agent.tools) if agent.tools else "all tools"
+            out.line(f"  {agent.name:<32} model {agent.model or 'inherit':<8} {tools[:70]}")
+        out.line(f"{len(session.agents)} agents")
+    elif name == "/init":
+        return INIT_PROMPT + (f"\n\nExtra instructions: {argument}" if argument else "")
     elif name == "/files":
         for path in session.touched:
             out.line(f"  {path}")
@@ -252,8 +285,8 @@ async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
             if not text:
                 continue
             if text.startswith("/"):
-                if text.split()[0] == "/mcp" and "refresh" in text.split()[1:]:
-                    await session.connect_mcp(refresh=True)
+                if await run_async_command(session, text, out):
+                    continue
                 outcome = run_command(session, models, text, out)
                 if outcome is False:
                     break

@@ -115,6 +115,8 @@ class Settings:
     mcp_allow: list[str] = field(default_factory=list)  # tool-name patterns that run unasked
     web_allow_private: bool = False  # WebFetch may reach loopback and private addresses
     skill_dirs: list[str] = field(default_factory=list)  # "folder" or "prefix=folder"
+    agent_models: dict[str, str] = field(default_factory=dict)  # e.g. opus = "qwen3.8-max"
+    auto_compact: bool = True  # summarise the history when the soft budget is reached
 
 
 def load_settings(path: Path | None = None) -> Settings:

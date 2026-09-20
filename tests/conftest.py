@@ -99,6 +99,7 @@ def make_session(tmp_path: Path):
             system_prompt="test system prompt",
             skills={},
             commands={},
+            agents={},
         )
         return session, recorder, provider
 

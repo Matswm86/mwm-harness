@@ -9,10 +9,12 @@ the turn continues with ``stop_hook_active`` set, up to ``max_stop_blocks``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
 from mwm_harness import events as ev
+from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.config import ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.hooks import HookEngine, load_registrations
@@ -59,6 +61,20 @@ def default_hook_settings(cwd: Path) -> list[Path]:
     return unique
 
 
+COMPACT_PROMPT = """\
+Write a summary of this conversation that will REPLACE it: after this message the history above \
+is gone and only your summary remains. Include, in this order:
+1. What the user asked for, in their words where the wording matters, and any standing instructions.
+2. What was done: files read, created and changed (full paths), commands run and their outcomes.
+3. Decisions made and why; approaches that failed and why.
+4. Facts learned that are needed later (names, numbers, error messages, IDs).
+5. The task list with each item's state.
+6. The exact next step.
+Do not call tools. Answer with the summary only."""
+
+SUBAGENT_HOOK_EVENTS = ("PreToolUse", "PostToolUse", "PermissionRequest")
+FORWARDED = (ev.Notice, ev.HookBlocked, ev.FilesTouched)  # subagent events the person should see
+
 PLAN_MODE_NOTE = (
     "Plan mode is on. Research with the reading tools only; do not edit files or run commands "
     "that change anything. When the plan is complete, call ExitPlanMode with it."
@@ -86,6 +102,8 @@ class Session:
         mcp: McpManager | None = None,
         skills: dict[str, Skill] | None = None,
         commands: dict[str, Command] | None = None,
+        agents: dict[str, Agent] | None = None,
+        models: dict[str, ModelSpec] | None = None,
     ) -> None:
         self.cwd = cwd.resolve()
         self.model = model
@@ -103,6 +121,11 @@ class Session:
         self.commands = commands if commands is not None else load_commands(command_roots(self.cwd))
         if self.skills and tools is None:
             self.tools["Skill"] = SkillTool(self.skills)
+        self.models = models or {model.id: model}
+        self.agents = agents if agents is not None else load_agents(agent_roots(self.cwd))
+        if self.agents and tools is None:
+            self.tools["Task"] = TaskTool(self.agents, self.run_agent)
+        self._sessions_dir = sessions_dir
         self.transcript = Transcript.create(self.cwd, sessions_dir)
         self.resumed = resume_from is not None
         self.messages: list[Message] = load_messages(resume_from) if resume_from else []
@@ -130,6 +153,7 @@ class Session:
             sandbox=Sandbox(self.settings.sandbox, writable),
             output_cap=self.settings.tool_output_cap,
         )
+        self._hook_settings_arg = hook_settings
         if hook_settings is None:
             configured = [Path(p).expanduser() for p in self.settings.hook_settings]
             hook_settings = configured or default_hook_settings(self.cwd)
@@ -221,6 +245,113 @@ class Session:
         if self.mcp is not None:
             await self.mcp.close()
 
+    # ------------------------------------------------------------- compaction
+
+    async def compact(self, trigger: str = "manual", instructions: str = "") -> str:
+        """Replace the history with a summary written by the model. Returns the summary."""
+        if not self.messages:
+            return ""
+        ask = COMPACT_PROMPT + (f"\n\nExtra instructions: {instructions}" if instructions else "")
+        assembler = StreamAssembler()
+        try:
+            request = [*self.messages, Message("user", ask)]
+            async for chunk in self.provider.stream(self.model, self.system_prompt, request, []):
+                assembler.feed(chunk)
+        except ProviderError as exc:
+            self.bus.emit(ev.Notice("error", f"compaction failed, history kept: {exc}"))
+            return ""
+        turn = assembler.finish()
+        summary = turn.text.strip()
+        if not summary:
+            self.bus.emit(ev.Notice("error", "compaction failed, history kept: empty summary"))
+            return ""
+        self.meter.record(turn.usage)
+        before = len(self.messages)
+        self.transcript.note("compact_boundary", f"{before} messages summarised", trigger=trigger)
+        self.messages = []
+        self._add(
+            Message(
+                "user",
+                "This session continues from an earlier conversation that was summarised to "
+                f"save context. The summary:\n\n{summary}",
+            ),
+            isCompactSummary=True,
+        )
+        self.meter.prompt_tokens = self.meter.completion_tokens = self.meter.cached_tokens = 0
+        self._emit_usage()
+        self.bus.emit(ev.Compacted(trigger, summary, before))
+        outcome = await self.hooks.run("PostCompact", trigger=trigger, compact_summary=summary)
+        self._report(outcome, "PostCompact")
+        if outcome.context:
+            self._add(Message("user", reminder("\n\n".join(outcome.context)), is_meta=True))
+        return summary
+
+    # -------------------------------------------------------------- subagents
+
+    async def run_agent(self, name: str, prompt: str) -> ToolResult:
+        """Run one subagent to its final answer. Cancelling the parent turn cancels it too."""
+        agent = self.agents[name]
+        model, note = resolve_model(agent, self.model, self.models, self.settings.agent_models)
+        if note:
+            self.bus.emit(ev.Notice("warn", f"{note}; it runs on {model.id}"))
+        tools = {n: tool for n, tool in self.tools.items() if agent.allows(n)}
+        child_bus = ev.EventBus()
+        counted: list[str] = []
+        child_bus.subscribe(
+            lambda e: counted.append(e.name) if isinstance(e, ev.ToolStarted) else None
+        )
+        child_bus.subscribe(lambda e: self.bus.emit(e) if isinstance(e, FORWARDED) else None)
+        child = Session(
+            cwd=self.cwd,
+            model=model,
+            provider=self.provider,
+            settings=self.settings,
+            approver=self.approver,
+            bus=child_bus,
+            hook_settings=self._hook_settings_arg,
+            sessions_dir=self._sessions_dir,
+            tools=tools,
+            system_prompt=f"{agent.prompt}\n\n{self._environment_note(model)}",
+            skills=self.skills,
+            commands={},
+            agents={},
+            models=self.models,
+        )
+        # A subagent is not a session of its own: only the tool hooks apply to it.
+        child.hooks.registrations = [
+            r for r in child.hooks.registrations if r.event in SUBAGENT_HOOK_EVENTS
+        ]
+        child.permissions.session_allow = self.permissions.session_allow
+        child.tool_ctx.read_files = self.tool_ctx.read_files
+        child.transcript.note("subagent", f"{name} started by session {self.transcript.session_id}")
+        self.bus.emit(ev.SubagentStarted(name, model.id, prompt))
+        try:
+            ended = await child.send(prompt)
+        except asyncio.CancelledError:
+            self.bus.emit(ev.SubagentFinished(name, "cancelled", len(counted)))
+            raise
+        finally:
+            self.meter.total_prompt += child.meter.total_prompt
+            self.meter.total_completion += child.meter.total_completion
+            self.meter.requests += child.meter.requests
+            await child.hooks.drain()
+        self.bus.emit(ev.SubagentFinished(name, ended.reason, len(counted)))
+        if ended.reason == "cancelled":
+            # Stopping the parent turn cancels the task it awaits, and the child turn absorbs
+            # that cancel to clean up. Pass it on, or the parent would go on as if nothing happened.
+            raise asyncio.CancelledError
+        if ended.reason != "done":
+            return ToolResult(
+                f"agent {name} ended with {ended.reason}: {ended.text}"[:20_000], True
+            )
+        return ToolResult(self.tool_ctx.cap(ended.text or "(the agent returned no text)"))
+
+    def _environment_note(self, model: ModelSpec) -> str:
+        return (
+            f"# Environment\n- Working directory: {self.cwd}\n- Model: {model.id}\n"
+            "- You are a subagent: your final message is the only thing the caller receives."
+        )
+
     # ------------------------------------------------------------------- turn
 
     async def send(self, prompt: str) -> ev.TurnEnded:
@@ -232,6 +363,11 @@ class Session:
             # Cancelled while a hook was running: the turn ends, the session lives on.
             if self._turn_task.cancelled():
                 return self._end("cancelled")
+            # The caller itself was cancelled (a subagent whose parent turn was stopped):
+            # stop the inner turn too, and wait until it has killed its running tool.
+            self._turn_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._turn_task
             raise
         finally:
             self._turn_task = None
@@ -257,6 +393,20 @@ class Session:
 
         stop_blocks = 0
         while True:
+            if self.meter.over_budget and self.settings.auto_compact:
+                self.bus.emit(
+                    ev.Notice("info", f"soft budget reached, compacting: {self.meter.line()}")
+                )
+                if await self.compact("auto"):
+                    self._add(
+                        Message(
+                            "user",
+                            reminder("Continue the task from the exact next step."),
+                            is_meta=True,
+                        )
+                    )
+                else:
+                    self.meter.prompt_tokens = 0  # do not retry on every request of this turn
             assembler = StreamAssembler()
             try:
                 await self._stream(assembler)
@@ -298,7 +448,11 @@ class Session:
             if not outcome.blocked:
                 if self.meter.over_budget:
                     self.bus.emit(
-                        ev.Notice("warn", f"over the soft context budget: {self.meter.line()}")
+                        ev.Notice(
+                            "warn",
+                            f"over the soft context budget: {self.meter.line()}"
+                            + ("; the next request compacts" if self.settings.auto_compact else ""),
+                        )
                     )
                 return self._end("done", message.text())
             stop_blocks += 1

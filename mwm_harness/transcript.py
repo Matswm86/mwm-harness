@@ -114,6 +114,8 @@ def load_messages(path: Path) -> list[Message]:
         content = body.get("content")
         if not isinstance(content, (str, list)):
             continue
+        if entry.get("isCompactSummary"):
+            messages = []  # everything before a compaction was replaced by its summary
         extra = {k: v for k, v in body.items() if k not in ("role", "content")}
         messages.append(Message(entry["type"], content, bool(entry.get("isMeta")), extra))
     return repair_history(messages)
