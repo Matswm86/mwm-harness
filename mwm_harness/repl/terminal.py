@@ -31,6 +31,9 @@ HELP = """\
 /tasks                the current task list
 /hooks                registered hooks per event
 /memory               the rule and memory files in the system prompt
+/mcp [refresh]        MCP servers, their state and tool counts; refresh re-lists the tools
+/skills               skills the model can load; /NAME [arguments] runs one
+/commands             command files; /NAME [arguments] runs one
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
 /clear                forget the conversation (the transcript file is kept)
 /quit                 leave"""
@@ -106,8 +109,14 @@ class TerminalApprover:
         return answer in ("y", "yes")
 
 
-def run_command(session: Session, models: dict[str, ModelSpec], text: str, out: Printer) -> bool:
-    """Handle one slash command. Returns False when the REPL should exit."""
+def run_command(
+    session: Session, models: dict[str, ModelSpec], text: str, out: Printer
+) -> bool | str:
+    """Handle one slash command.
+
+    Returns False when the REPL should exit, True when the command is done, and
+    a string when the command stands for a prompt that goes to the model.
+    """
     name, _, argument = text.partition(" ")
     argument = argument.strip()
     if name in ("/quit", "/exit"):
@@ -154,6 +163,26 @@ def run_command(session: Session, models: dict[str, ModelSpec], text: str, out: 
     elif name == "/resume":
         for path in list_sessions(session.cwd)[:15]:
             out.line(f"  {path.stem}  ({path.stat().st_size:,} bytes)")
+    elif name == "/mcp":
+        if session.mcp is None:
+            out.line("MCP is off (mcp_enabled = false, --no-mcp, or no .mcp.json found)")
+        else:
+            for row in session.mcp.status():
+                out.line(row)
+    elif name == "/skills":
+        for skill in session.skills.values():
+            out.line(f"  {skill.name:<28} {skill.description[:90]}")
+        out.line(f"{len(session.skills)} skills")
+    elif name == "/commands":
+        for command in session.commands.values():
+            out.line(f"  /{command.name:<27} {command.description[:90]}")
+        out.line(f"{len(session.commands)} command files")
+    elif name[1:] in session.commands:
+        return session.commands[name[1:]].render(argument)
+    elif name[1:] in session.skills:
+        skill = session.skills[name[1:]]
+        tail = f" Arguments: {argument}" if argument else ""
+        return f"Load the skill {skill.name} with the Skill tool and follow it.{tail}"
     elif name == "/clear":
         session.messages.clear()
         session.transcript.note("cleared", "conversation cleared by the user")
@@ -170,7 +199,9 @@ async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
     sandbox = "on" if session.tool_ctx.sandbox.enabled else "OFF"
     out.line(
         f"MWM Harness | {session.model.id} | mode {session.permissions.mode} | "
-        f"sandbox {sandbox} | {len(session.hooks.registrations)} hooks | /help"
+        f"sandbox {sandbox} | {len(session.hooks.registrations)} hooks | "
+        f"{sum(1 for name in session.tools if name.startswith('mcp__'))} MCP tools | "
+        f"{len(session.skills)} skills | /help"
     )
     loop = asyncio.get_running_loop()
 
@@ -188,9 +219,14 @@ async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
             if not text:
                 continue
             if text.startswith("/"):
-                if not run_command(session, models, text, out):
+                if text.split()[0] == "/mcp" and "refresh" in text.split()[1:]:
+                    await session.connect_mcp(refresh=True)
+                outcome = run_command(session, models, text, out)
+                if outcome is False:
                     break
-                continue
+                if outcome is True:
+                    continue
+                text = outcome
             await session.send(text)
             out.line()
     finally:

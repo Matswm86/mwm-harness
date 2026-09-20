@@ -13,8 +13,16 @@ import sys
 from pathlib import Path
 
 from mwm_harness import __version__
-from mwm_harness.config import ConfigError, api_key_for, load_models, load_secrets, load_settings
+from mwm_harness.config import (
+    ConfigError,
+    api_key_for,
+    config_dir,
+    load_models,
+    load_secrets,
+    load_settings,
+)
 from mwm_harness.loop import Session
+from mwm_harness.mcp_client import McpError, McpManager, default_mcp_files, load_server_configs
 from mwm_harness.permissions import MODES
 from mwm_harness.providers import OpenAICompatProvider
 from mwm_harness.repl.terminal import Printer, TerminalApprover, repl, resolve_session
@@ -28,6 +36,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume", metavar="ID", help="session id prefix, or 'last'")
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="project directory")
     parser.add_argument("--no-hooks", action="store_true", help="run without any hooks")
+    parser.add_argument("--no-mcp", action="store_true", help="run without MCP servers")
     parser.add_argument("--version", action="version", version=f"mwm-harness {__version__}")
     return parser.parse_args(argv)
 
@@ -49,6 +58,16 @@ async def run(args: argparse.Namespace) -> int:
         if resume_from is None:
             raise ConfigError(f"no session matches {args.resume!r} for {args.cwd}")
 
+    mcp = None
+    if settings.mcp_enabled and not args.no_mcp:
+        files = [Path(p).expanduser() for p in settings.mcp_files]
+        try:
+            configs = load_server_configs(files or default_mcp_files(args.cwd.resolve()))
+        except McpError as exc:
+            raise ConfigError(str(exc)) from exc
+        if configs:
+            mcp = McpManager(configs, log_dir=config_dir() / "logs")
+
     holder: list[Session] = []
     session = Session(
         cwd=args.cwd,
@@ -58,6 +77,7 @@ async def run(args: argparse.Namespace) -> int:
         approver=None if args.prompt else TerminalApprover(lambda: holder[0]),
         hook_settings=[] if args.no_hooks else None,
         resume_from=resume_from,
+        mcp=mcp,
     )
     holder.append(session)
 

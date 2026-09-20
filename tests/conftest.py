@@ -97,6 +97,8 @@ def make_session(tmp_path: Path):
             resume_from=resume_from,
             sessions_dir=tmp_path / "sessions",
             system_prompt="test system prompt",
+            skills={},
+            commands={},
         )
         return session, recorder, provider
 

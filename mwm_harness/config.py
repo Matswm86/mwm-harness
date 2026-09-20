@@ -110,6 +110,11 @@ class Settings:
     max_stop_blocks: int = 3
     hooks_may_approve: bool = False  # a PreToolUse "allow" skips the approval prompt
     tool_output_cap: int = 30_000
+    mcp_enabled: bool = True
+    mcp_files: list[str] = field(default_factory=list)  # default: .mcp.json of cwd and workspace
+    mcp_allow: list[str] = field(default_factory=list)  # tool-name patterns that run unasked
+    web_allow_private: bool = False  # WebFetch may reach loopback and private addresses
+    skill_dirs: list[str] = field(default_factory=list)  # "folder" or "prefix=folder"
 
 
 def load_settings(path: Path | None = None) -> Settings:

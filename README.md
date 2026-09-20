@@ -4,7 +4,7 @@ A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
 slash commands first, a local browser window with panels (files, code and diffs,
 tasks, plan, token meter) later. One core library, thin front-ends.
 
-> **Work in progress.** Phases 1 to 3 are built and tested against a scripted
+> **Work in progress.** Phases 1 to 4 are built and tested against a scripted
 > model. No run against a live model has happened yet, so nothing here is stable
 > and everything may change without notice.
 
@@ -25,8 +25,9 @@ Each phase closes on a test, not on a date.
 
 ## State
 
-Phases 1, 2 and 3 are built; phase 0 (the live spike) still waits on an API key.
-Every test below runs without a network: a scripted provider plays the model.
+Phases 1 to 4 are built; phase 0 (the live spike) still waits on an API key.
+Every test runs without a network: a scripted provider plays the model, a fake
+stdio server plays MCP, a mocked transport plays the web.
 
 - `messages.py`, `transcript.py`: history and the session file use Anthropic-style
   content blocks (`text`, `tool_use`, `tool_result`), one JSON object per line.
@@ -56,14 +57,34 @@ Every test below runs without a network: a scripted provider plays the model.
 - `context.py`: system prompt from the rules files it finds (`CLAUDE.md`,
   `RULES.md`, `AGENTS.md`, with `@file.md` imports) plus the workspace memory
   index; the context meter reads the endpoint's own usage numbers.
+- `mcp_client.py`: reads `.mcp.json` as Claude Code writes it (project, workspace,
+  then `mcp.json` in the config folder) and offers each server tool to the model
+  as `mcp__server__tool`. Two transports, no SDK dependency: stdio (one JSON-RPC
+  message per line) and streamable HTTP (JSON or event-stream answers, session
+  header). A server starts on its first call; the tool listing comes from a cache
+  keyed on the server's configuration and its script's modification time. The
+  per-server `timeout` of `.mcp.json` is honoured, a timeout or a cancel sends
+  `notifications/cancelled`. Image results are saved to the scratch folder and
+  named in the result. A tool marked `readOnlyHint` runs unasked; every other MCP
+  tool asks, unless a pattern in `mcp_allow` covers it. The deny list still wins.
+- `tools/web.py`: `WebFetch` (HTML to text with headings, lists and link targets;
+  5 MB cap; each redirect hop re-checked; loopback and private addresses refused
+  unless `web_allow_private = true`) and `WebSearch` (DuckDuckGo's HTML page, or
+  the Brave API when `BRAVE_API_KEY` is set).
+- `skills.py`: `SKILL.md` folders from `.claude/skills` (project, workspace, home)
+  and from `skill_dirs`; the system prompt lists names and descriptions, the
+  `Skill` tool loads a body. Command files (`.claude/commands/**/*.md`) become
+  slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
-  /models /context /usage /mode /permissions /tasks /hooks /memory /resume /clear
-  /quit`. `mwm -p "question"` runs one headless turn.
+  /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
+  /commands /resume /clear /quit`, plus one per command file and per skill.
+  `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
+- `spike/real_mcp_check.py`: starts every configured MCP server, lists its tools,
+  and sends one `search_knowledge` call through a real session.
 - `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
   on this machine and reports which of them fired and blocked.
 
-Not built yet: MCP client, web tools, skills, subagents, compaction, the browser
-panels (phases 4 to 7).
+Not built yet: subagents, compaction, the browser panels (phases 5 to 7).
 
 ## Use
 
@@ -75,7 +96,8 @@ panels (phases 4 to 7).
 ```
 
 Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
-permission mode, sandbox, extra writable paths, hook settings files),
+permission mode, sandbox, extra writable paths, hook settings files, `mcp_allow`,
+`mcp_files`, `skill_dirs`, `web_allow_private`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
 `hooks.json` (hooks in the `settings.json` format).
 

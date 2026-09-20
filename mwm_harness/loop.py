@@ -16,6 +16,7 @@ from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.hooks import HookEngine, load_registrations
+from mwm_harness.mcp_client import McpManager
 from mwm_harness.messages import (
     Block,
     Message,
@@ -26,6 +27,16 @@ from mwm_harness.messages import (
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
 from mwm_harness.sandbox import Sandbox
+from mwm_harness.skills import (
+    Command,
+    Skill,
+    SkillTool,
+    command_roots,
+    load_commands,
+    load_skills,
+    skill_roots,
+    skills_prompt,
+)
 from mwm_harness.streaming import StreamAssembler
 from mwm_harness.tools import Tool, ToolContext, ToolResult, default_tools
 from mwm_harness.transcript import Transcript, load_messages, usage_to_anthropic
@@ -66,6 +77,9 @@ class Session:
         sessions_dir: Path | None = None,
         tools: dict[str, Tool] | None = None,
         system_prompt: str | None = None,
+        mcp: McpManager | None = None,
+        skills: dict[str, Skill] | None = None,
+        commands: dict[str, Command] | None = None,
     ) -> None:
         self.cwd = cwd.resolve()
         self.model = model
@@ -73,7 +87,16 @@ class Session:
         self.settings = settings or Settings()
         self.approver = approver or ev.DenyAll()
         self.bus = bus or ev.EventBus()
-        self.tools = tools if tools is not None else default_tools()
+        self.tools = tools if tools is not None else default_tools(self.settings.web_allow_private)
+        self.mcp = mcp
+        self.skills = (
+            skills
+            if skills is not None
+            else load_skills(skill_roots(self.cwd, self.settings.skill_dirs))
+        )
+        self.commands = commands if commands is not None else load_commands(command_roots(self.cwd))
+        if self.skills and tools is None:
+            self.tools["Skill"] = SkillTool(self.skills)
         self.transcript = Transcript.create(self.cwd, sessions_dir)
         self.resumed = resume_from is not None
         self.messages: list[Message] = load_messages(resume_from) if resume_from else []
@@ -83,7 +106,10 @@ class Session:
                 self.transcript.append(message)
         self.meter = ContextMeter(model.context_window, model.soft_budget)
         self.permissions = Permissions(
-            self.settings.permission_mode, self.cwd, load_extra_deny(config_dir() / "deny.toml")
+            self.settings.permission_mode,
+            self.cwd,
+            load_extra_deny(config_dir() / "deny.toml"),
+            tuple(self.settings.mcp_allow),
         )
         scratch = self.transcript.path.with_suffix("") / "scratch"
         writable = [
@@ -116,8 +142,32 @@ class Session:
     @property
     def system_prompt(self) -> str:
         if self._system_prompt is None:
-            self._system_prompt = build_system_prompt(self.cwd, workspace_root(), self.model)
+            parts = [build_system_prompt(self.cwd, workspace_root(), self.model)]
+            parts.append(skills_prompt(self.skills) if "Skill" in self.tools else "")
+            parts.append(self._mcp_instructions())
+            self._system_prompt = "\n\n".join(part for part in parts if part)
         return self._system_prompt
+
+    def _mcp_instructions(self) -> str:
+        if self.mcp is None:
+            return ""
+        rows = [
+            f"## {name}\n{server.instructions}"
+            for name, server in self.mcp.servers.items()
+            if server.instructions
+        ]
+        return "# MCP server instructions\n\n" + "\n\n".join(rows) if rows else ""
+
+    async def connect_mcp(self, refresh: bool = False) -> None:
+        """List the MCP tools (from the cache when it is current) and register them."""
+        if self.mcp is None:
+            return
+        for name in [n for n in self.tools if n.startswith("mcp__")]:
+            del self.tools[name]
+        self.tools.update(await self.mcp.discover(refresh))
+        for name, server in self.mcp.servers.items():
+            if server.error:
+                self.bus.emit(ev.Notice("warn", f"MCP server {name} failed: {server.error}"))
 
     def set_model(self, model: ModelSpec) -> None:
         self.model = model
@@ -130,6 +180,7 @@ class Session:
         self.hooks.permission_mode = mode
 
     async def start(self) -> None:
+        await self.connect_mcp()
         outcome = await self.hooks.run(
             "SessionStart", source="resume" if self.resumed else "startup"
         )
@@ -141,6 +192,8 @@ class Session:
         outcome = await self.hooks.run("SessionEnd", reason=reason)
         self._report(outcome, "SessionEnd")
         await self.hooks.drain()
+        if self.mcp is not None:
+            await self.mcp.close()
 
     # ------------------------------------------------------------------- turn
 

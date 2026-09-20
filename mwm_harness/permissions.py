@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -99,8 +100,15 @@ def load_extra_deny(path: Path) -> tuple[DenyRule, ...]:
 
 
 class Permissions:
-    def __init__(self, mode: str, project: Path, extra_deny: tuple[DenyRule, ...] = ()) -> None:
+    def __init__(
+        self,
+        mode: str,
+        project: Path,
+        extra_deny: tuple[DenyRule, ...] = (),
+        allow_patterns: tuple[str, ...] = (),
+    ) -> None:
         self.set_mode(mode)
+        self.allow_patterns = allow_patterns
         self.project = project.resolve()
         self.rules = BUILTIN_DENY + extra_deny
         self._compiled = {
@@ -138,6 +146,8 @@ class Permissions:
         if rule:
             return Decision("deny", f"Denied by the hard deny list ({rule.id}): {rule.why}.")
         if read_only or tool_name in READ_ONLY_TOOLS or tool_name in self.session_allow:
+            return Decision("allow")
+        if any(fnmatchcase(tool_name, pattern) for pattern in self.allow_patterns):
             return Decision("allow")
         if self.mode == "bypassPermissions":
             return Decision("allow")
