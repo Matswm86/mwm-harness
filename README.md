@@ -4,7 +4,7 @@ A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
 slash commands first, a local browser window with panels (files, code and diffs,
 tasks, plan, token meter) later. One core library, thin front-ends.
 
-> **Work in progress.** Phases 1 to 5 are built and tested against a scripted
+> **Work in progress.** Phases 1 to 6 are built and tested against a scripted
 > model. No run against a live model has happened yet, so nothing here is stable
 > and everything may change without notice.
 
@@ -25,7 +25,7 @@ Each phase closes on a test, not on a date.
 
 ## State
 
-Phases 1 to 5 are built; phase 0 (the live spike) still waits on an API key.
+Phases 1 to 6 are built; phase 0 (the live spike) still waits on an API key.
 Every test runs without a network: a scripted provider plays the model, a fake
 stdio server plays MCP, a mocked transport plays the web.
 
@@ -77,7 +77,7 @@ stdio server plays MCP, a mocked transport plays the web.
   slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
-  /commands /resume /clear /quit`, plus one per command file and per skill.
+  /commands /plan /files /open /resume /clear /quit`, plus one per command file and per skill.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
 - `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
   page, one websocket, the same `Session` as the terminal: chat with streamed
@@ -89,6 +89,13 @@ stdio server plays MCP, a mocked transport plays the web.
   token that travels in the address fragment, so it never reaches a log or a
   `Referer`. A page that opens late gets the history and any open approval.
   The API does not expose the plan's credit balance, so the bar counts requests.
+- `preview.py` and the panel's file views: a file tree of the project, tabs of
+  open files, a list of files the tools touched, and a read-only code viewer
+  (Monaco 0.56.0 from jsdelivr; without a network the page falls back to plain
+  text). Before a `Write` or `Edit` is approved, its result is computed without
+  touching the disk and shown as a side-by-side diff; the terminal prompt prints
+  the same change as a unified diff. Browsing answers only for paths inside the
+  project: `..`, absolute paths and symlinks that lead out are refused.
 - Plan mode (`/plan`, `--mode plan`): only reading tools run; the model hands in
   its plan with `ExitPlanMode`, and your yes returns to the mode you came from.
 - `spike/panel_demo.py`: the panel with a scripted model, for a look without a key.
@@ -97,8 +104,7 @@ stdio server plays MCP, a mocked transport plays the web.
 - `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
   on this machine and reports which of them fired and blocked.
 
-Not built yet: file tree, code viewer and diffs (phase 6), subagents and
-compaction (phase 7).
+Not built yet: subagents and compaction (phase 7).
 
 ## Use
 

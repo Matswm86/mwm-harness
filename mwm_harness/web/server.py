@@ -28,10 +28,12 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec
 from mwm_harness.loop import Session
+from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_command
 
 STATIC = Path(__file__).parent / "static"
 POLICY_VIOLATION = 1008
+CDN = "https://cdn.jsdelivr.net"  # the code viewer (Monaco) loads from here; see index.html
 QUIET_EVENTS = (ev.HookContext,)  # large and only useful in the transcript
 
 
@@ -119,6 +121,7 @@ class Panel:
             "busy": self.busy,
             "todos": list(session.tool_ctx.todos),
             "plan": session.plan,
+            "touched": list(session.touched),
             "usage": self.usage(),
             "history": [
                 {"role": m.role, "blocks": m.blocks()} for m in session.messages if not m.is_meta
@@ -138,6 +141,9 @@ class Panel:
             "input": tool_input,
             "reason": reason,
         }
+        change = preview_change(tool_name, tool_input, self.session.tool_ctx)
+        if change is not None:
+            request["diff"] = {**dataclasses.asdict(change), "unified": change.unified()}
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (request, future)
         self.broadcast(request)
@@ -173,6 +179,20 @@ class Panel:
                 entry[1].set_result(answer)
         elif kind == "state":
             reply.put_nowait(self.state())
+        elif kind in ("tree", "open"):
+            relative = str(message.get("path") or "")
+            try:
+                if kind == "tree":
+                    entries = list_dir(self.session.cwd, relative)
+                    reply.put_nowait({"type": "Tree", "path": relative, "entries": entries})
+                else:
+                    reply.put_nowait(
+                        {"type": "FileContent", **read_file(self.session.cwd, relative)}
+                    )
+            except OutsideProject:
+                reply.put_nowait(
+                    {"type": "FileContent", "path": relative, "error": "outside the project"}
+                )
 
     def start_turn(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
         if self.busy:
@@ -192,6 +212,9 @@ class Panel:
             return ""
         if words[0] == "/mcp" and "refresh" in words[1:]:
             await self.session.connect_mcp(refresh=True)
+        if words[0] == "/open" and len(words) > 1:
+            await self.handle({"type": "open", "path": text.split(None, 1)[1]}, reply)
+            return ""
         out = CapturedOutput()
         outcome = run_command(self.session, self.models, text, out)  # type: ignore[arg-type]
         if out.rows:
@@ -242,8 +265,9 @@ def create_app(
             headers={
                 "Cache-Control": "no-store",
                 "Content-Security-Policy": (
-                    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
-                    "style-src 'self' 'unsafe-inline'; connect-src 'self' "
+                    f"default-src 'self'; script-src 'self' 'unsafe-inline' {CDN}; "
+                    f"style-src 'self' 'unsafe-inline' {CDN}; font-src {CDN} data:; "
+                    f"worker-src blob:; connect-src 'self' {CDN} "
                     f"ws://127.0.0.1:{port} ws://localhost:{port}; frame-ancestors 'none'"
                 ),
                 "Referrer-Policy": "no-referrer",

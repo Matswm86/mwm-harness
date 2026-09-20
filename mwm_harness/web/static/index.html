@@ -36,8 +36,24 @@ header select { background: var(--bg); color: var(--ink); border: 1px solid var(
 .meter i.over { background: var(--warn); }
 #conn { margin-left: auto; font-size: 12px; color: var(--dim); }
 #conn.down { color: var(--bad); }
-main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; }
-#chatcol { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+main { display: grid; grid-template-columns: 240px minmax(0, 1fr) 320px; min-height: 0; }
+#chatcol { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+#chatcol > #log, #chatcol > #viewer { grid-row: 2; }
+nav#tree { border-right: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 10px 6px; font-size: 13px; }
+nav#tree h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 8px 6px; }
+#tree ul { list-style: none; margin: 0; padding-left: 12px; } #tree > ul { padding-left: 2px; }
+#tree button { all: unset; box-sizing: border-box; cursor: pointer; display: block; width: 100%; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+#tree button:hover, #touched button:hover { background: var(--code); } #tree button:focus-visible { outline: 2px solid var(--accent); }
+#tree .dir::before { content: '▸ '; color: var(--dim); } #tree .dir.open::before { content: '▾ '; }
+#tabs { display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
+#tabs button { border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 4px 10px; font-size: 13px; background: none; white-space: nowrap; }
+#tabs button.active { background: var(--bg); border-color: var(--line); font-weight: 600; }
+#tabs .x { margin-left: 8px; color: var(--dim); }
+#viewer { min-height: 0; display: none; } #viewer.on { display: block; } #log.off { display: none; }
+#viewer pre { margin: 0; padding: 14px 18px; height: 100%; overflow: auto; white-space: pre; }
+#viewer .mon, #apdiff { height: 100%; } #apdiff { height: 52vh; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+#touched { list-style: none; margin: 0; padding: 0; font-size: 13px; } #touched button { all: unset; box-sizing: border-box; cursor: pointer; display: block; width: 100%; padding: 1px 4px; border-radius: 4px; word-break: break-all; }
+dialog.wide { width: min(1180px, 95vw); }
 #log { overflow-y: auto; padding: 18px 22px; }
 .msg { max-width: 900px; margin: 0 auto 14px; }
 .msg.user { background: var(--user); border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; }
@@ -92,6 +108,7 @@ dialog pre { background: var(--code); padding: 10px 12px; border-radius: 8px; ma
   white-space: pre-wrap; word-break: break-word; }
 dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 kbd { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; opacity: .7; margin-left: 4px; }
+@media (max-width: 1100px) { main { grid-template-columns: minmax(0, 1fr) 300px; } nav#tree { display: none; } }
 @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { display: none; } }
 </style>
 </head>
@@ -109,8 +126,11 @@ kbd { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; paddi
   <span id="conn">connecting</span>
 </header>
 <main>
+  <nav id="tree" aria-label="Project files"><h2>Files</h2><ul id="treeroot"></ul></nav>
   <div id="chatcol">
+    <div id="tabs" role="tablist"></div>
     <div id="log" aria-live="polite"></div>
+    <div id="viewer"></div>
     <form id="form">
       <textarea id="input" rows="1" placeholder="Message, or /help. Enter sends, Shift+Enter breaks the line, Esc stops a turn." autofocus></textarea>
       <button type="button" id="stop" class="danger" hidden>Stop</button>
@@ -120,11 +140,12 @@ kbd { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; paddi
   <aside>
     <section><h2>Tasks</h2><div id="tasksum"></div><ul id="tasks"></ul></section>
     <section><h2>Plan</h2><div id="plan" class="empty">No plan yet. /plan turns plan mode on.</div></section>
+    <section><h2>Touched files</h2><ul id="touched"></ul><div id="touchedempty" class="empty">Files the tools read or write show up here.</div></section>
     <section><h2>Session</h2><div id="sessinfo" class="empty mono"></div></section>
   </aside>
 </main>
 <dialog id="approval">
-  <h3 id="aptitle"></h3><div class="why" id="apwhy"></div><pre id="apbody"></pre>
+  <h3 id="aptitle"></h3><div class="why" id="apwhy"></div><pre id="apbody"></pre><div id="apdiff" hidden></div>
   <div class="row">
     <button id="apno" class="danger">No<kbd>n</kbd></button>
     <button id="apalways">Always this session<kbd>a</kbd></button>
@@ -142,6 +163,91 @@ let current = null;            // the assistant message being streamed
 let reasoning = null;          // the reasoning block being streamed
 const tools = new Map();       // tool_use_id -> card
 const approvals = [];          // queue of open approval requests
+const MONACO = "https://cdn.jsdelivr.net/npm/monaco-editor@0.56.0/min/vs";
+const openFiles = new Map();   // path -> {content, error}
+let activeTab = "";            // "" is the chat
+let editor = null, diffEditor = null, monacoReady = null;
+
+function loadMonaco() {
+  if (monacoReady) return monacoReady;
+  monacoReady = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = MONACO + "/loader.js";
+    script.onerror = () => resolve(null);          // offline: plain text views are used instead
+    script.onload = () => {
+      try {
+        window.require.config({ paths: { vs: MONACO } });
+        window.require(["vs/editor/editor.main"], () => resolve(window.monaco), () => resolve(null));
+      } catch (e) { resolve(null); }
+    };
+    document.head.append(script);
+    setTimeout(() => resolve(window.monaco || null), 8000);
+  });
+  return monacoReady;
+}
+const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+function languageOf(path) {
+  const ext = path.split(".").pop().toLowerCase();
+  return ({ py: "python", js: "javascript", ts: "typescript", json: "json", md: "markdown", html: "html", css: "css",
+    sh: "shell", toml: "ini", yaml: "yaml", yml: "yaml", rs: "rust", go: "go", kt: "kotlin", sql: "sql", pine: "javascript" })[ext] || "plaintext";
+}
+
+function renderTabs() {
+  const bar = $("tabs"); bar.replaceChildren();
+  const chat = el("button", activeTab === "" ? "active" : "", "Chat"); chat.type = "button";
+  chat.onclick = () => showTab(""); bar.append(chat);
+  for (const path of openFiles.keys()) {
+    const tab = el("button", activeTab === path ? "active" : "", path.split("/").pop()); tab.type = "button"; tab.title = path;
+    const x = el("span", "x", "×"); x.onclick = (event) => { event.stopPropagation(); openFiles.delete(path); showTab(activeTab === path ? "" : activeTab); };
+    tab.append(x); tab.onclick = () => showTab(path); bar.append(tab);
+  }
+}
+async function showTab(path) {
+  activeTab = openFiles.has(path) ? path : "";
+  renderTabs();
+  $("log").classList.toggle("off", activeTab !== ""); $("viewer").classList.toggle("on", activeTab !== "");
+  if (editor) { editor.dispose(); editor = null; }
+  const view = $("viewer"); view.replaceChildren();
+  if (!activeTab) return;
+  const file = openFiles.get(activeTab);
+  if (file.error) { view.append(el("pre", null, `cannot show ${activeTab}: ${file.error}`)); return; }
+  const monaco = await loadMonaco();
+  if (activeTab !== path) return;                  // another tab was chosen while Monaco loaded
+  if (!monaco) { view.append(el("pre", "mono", file.content)); return; }
+  const box = el("div", "mon"); view.append(box);
+  editor = monaco.editor.create(box, { value: file.content, language: languageOf(path), readOnly: true,
+    automaticLayout: true, minimap: { enabled: false }, theme: dark() ? "vs-dark" : "vs", fontSize: 13 });
+}
+function openFile(path) { send({ type: "open", path }); }
+function fileContent(e) { openFiles.set(e.path, e); showTab(e.path); }
+
+function treeNode(entry) {
+  const li = el("li"), button = el("button", entry.dir ? "dir" : "file", entry.name); button.type = "button";
+  li.append(button);
+  if (!entry.dir) { button.onclick = () => openFile(entry.path); return li; }
+  button.onclick = () => {
+    const open = button.classList.toggle("open");
+    const child = li.querySelector("ul");
+    if (!open) { if (child) child.remove(); return; }
+    const list = el("ul"); list.dataset.path = entry.path; li.append(list); send({ type: "tree", path: entry.path });
+  };
+  return li;
+}
+function treeLoaded(e) {
+  const list = e.path === "" ? $("treeroot") : document.querySelector(`#tree ul[data-path="${CSS.escape(e.path)}"]`);
+  if (!list) return;
+  list.replaceChildren(...e.entries.map(treeNode));
+  if (!e.entries.length) list.append(el("li", "empty", "(empty)"));
+}
+function setTouched(paths) {
+  const list = $("touched"); list.replaceChildren();
+  [...(paths || [])].reverse().forEach((path) => {
+    const li = el("li"), button = el("button", "mono", path); button.type = "button";
+    button.onclick = () => openFile(path); li.append(button); list.append(li);
+  });
+  $("touchedempty").hidden = !!(paths && paths.length);
+  if (paths && paths.length && openFiles.has(paths[paths.length - 1])) openFile(paths[paths.length - 1]);  // refresh an open tab
+}
 
 const fmt = (n) => Number(n || 0).toLocaleString("en-US");
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -235,13 +341,28 @@ function setBusy(value) { busy = value; $("stop").hidden = !value; }
 
 function showApproval() {
   const dialog = $("approval"), request = approvals[0];
-  if (!request) { if (dialog.open) dialog.close(); return; }
+  if (!request) { if (diffEditor) { diffEditor.dispose(); diffEditor = null; } if (dialog.open) dialog.close(); return; }
   const isPlan = request.tool === "ExitPlanMode";
   $("aptitle").textContent = isPlan ? "Approve this plan?" : `Approve ${request.tool}?`;
   $("apwhy").textContent = request.reason || "";
   const input = request.input || {};
   $("apbody").textContent = isPlan ? input.plan : (request.tool === "Bash" ? input.command : JSON.stringify(input, null, 2));
   $("apalways").hidden = isPlan;
+  if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
+  const diff = request.diff, box = $("apdiff");
+  box.hidden = true; box.replaceChildren(); $("apbody").hidden = false; dialog.classList.toggle("wide", !!diff);
+  if (diff) {
+    $("aptitle").textContent = `Approve ${request.tool} of ${diff.path}?` + (diff.is_new ? " (new file)" : "");
+    $("apbody").textContent = diff.unified || "(no change)";
+    loadMonaco().then((monaco) => {
+      if (!monaco || approvals[0] !== request) return;   // offline, or already answered: the text diff stays
+      $("apbody").hidden = true; box.hidden = false;
+      diffEditor = monaco.editor.createDiffEditor(box, { readOnly: true, automaticLayout: true, renderSideBySide: true,
+        minimap: { enabled: false }, theme: dark() ? "vs-dark" : "vs", fontSize: 13 });
+      diffEditor.setModel({ original: monaco.editor.createModel(diff.before, languageOf(diff.path)),
+        modified: monaco.editor.createModel(diff.after, languageOf(diff.path)) });
+    });
+  }
   if (!dialog.open) dialog.showModal();
 }
 function answer(value) {
@@ -261,6 +382,7 @@ function loadState(s) {
     else if (b.type === "tool_use") toolStarted(b.id, b.name, b.input);
     else if (b.type === "tool_result") toolFinished(b.tool_use_id, b.content, !!b.is_error);
   }));
+  setTouched(s.touched); send({ type: "tree", path: "" }); renderTabs();
   setTodos(s.todos); setPlan(s.plan); setUsage(s.usage); setBusy(s.busy);
   approvals.length = 0; s.approvals.forEach((a) => approvals.push(a)); showApproval();
 }
@@ -277,6 +399,9 @@ const handlers = {
   UsageUpdated: setUsage,
   TodosUpdated: (e) => setTodos(e.todos),
   PlanProposed: (e) => setPlan(e.plan),
+  FilesTouched: (e) => setTouched(e.paths),
+  Tree: treeLoaded,
+  FileContent: fileContent,
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; },
   ModelChanged: (e) => { $("model").value = e.model; },

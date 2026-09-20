@@ -17,6 +17,7 @@ from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec
 from mwm_harness.loop import Session
 from mwm_harness.permissions import MODES
+from mwm_harness.preview import OutsideProject, preview_change, read_file
 from mwm_harness.transcript import list_sessions
 
 DIM, RED, YELLOW, CYAN, RESET = "\033[2m", "\033[31m", "\033[33m", "\033[36m", "\033[0m"
@@ -35,6 +36,8 @@ HELP = """\
 /mcp [refresh]        MCP servers, their state and tool counts; refresh re-lists the tools
 /skills               skills the model can load; /NAME [arguments] runs one
 /commands             command files; /NAME [arguments] runs one
+/files                files the tools have read or written this session
+/open PATH            show a project file with line numbers
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
 /clear                forget the conversation (the transcript file is kept)
 /quit                 leave"""
@@ -101,7 +104,11 @@ class TerminalApprover:
 
     async def ask(self, tool_name: str, tool_input: dict[str, Any], reason: str) -> bool:
         print(f"\n{YELLOW}Approve {tool_name}?{RESET} ({reason})")
-        print(json.dumps(tool_input, indent=2, ensure_ascii=False)[:2000])
+        change = preview_change(tool_name, tool_input, self._session().tool_ctx)
+        if change is not None:
+            print(change.unified()[:6000] or "(no change)")
+        else:
+            print(json.dumps(tool_input, indent=2, ensure_ascii=False)[:2000])
         answer = await asyncio.to_thread(input, "[y] yes  [a] always this session  [n] no > ")
         answer = answer.strip().lower()
         if answer == "a":
@@ -172,6 +179,23 @@ def run_command(
     elif name == "/resume":
         for path in list_sessions(session.cwd)[:15]:
             out.line(f"  {path.stem}  ({path.stat().st_size:,} bytes)")
+    elif name == "/files":
+        for path in session.touched:
+            out.line(f"  {path}")
+        out.line(f"{len(session.touched)} files touched this session")
+    elif name == "/open":
+        try:
+            shown = read_file(session.cwd, argument)
+        except OutsideProject:
+            shown = {"error": "outside the project directory"}
+        if "error" in shown:
+            out.line(f"cannot open {argument or '(no path)'}: {shown['error']}")
+        else:
+            rows = shown["content"].splitlines()
+            for number, row in enumerate(rows[:400], 1):
+                out.line(f"{number:>5}  {row}")
+            if len(rows) > 400:
+                out.line(f"[{len(rows) - 400} more lines]")
     elif name == "/mcp":
         if session.mcp is None:
             out.line("MCP is off (mcp_enabled = false, --no-mcp, or no .mcp.json found)")

@@ -90,6 +90,13 @@ class TodosUpdated(Event):
 
 
 @dataclass
+class FilesTouched(Event):
+    """Project files the tools have read or written this session, newest last."""
+
+    paths: list[str]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 

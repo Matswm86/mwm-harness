@@ -141,6 +141,7 @@ class Session:
         )
         self.hooks.permission_mode = self.permissions.mode
         self.plan = ""
+        self.touched: list[str] = []
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -393,6 +394,8 @@ class Session:
             result = ToolResult(f"{name} crashed: {type(exc).__name__}: {exc}", True)
         if name == "TodoWrite" and not result.is_error:
             self.bus.emit(ev.TodosUpdated(list(self.tool_ctx.todos)))
+        if name in ("Read", "Write", "Edit") and not result.is_error:
+            self._touch(str(tool_input.get("file_path") or ""))
 
         post = await self.hooks.run(
             "PostToolUse",
@@ -427,6 +430,17 @@ class Session:
         if fields.get("stop_reason"):
             message.extra = {**message.extra, "stop_reason": fields.pop("stop_reason")}
         self.transcript.append(message, **fields)
+
+    def _touch(self, file_path: str) -> None:
+        path = self.tool_ctx.resolve(file_path)
+        try:
+            shown = str(path.relative_to(self.cwd))
+        except ValueError:
+            shown = str(path)
+        if shown in self.touched:
+            self.touched.remove(shown)
+        self.touched.append(shown)
+        self.bus.emit(ev.FilesTouched(list(self.touched)))
 
     def _end(self, reason: str, text: str = "") -> ev.TurnEnded:
         ended = ev.TurnEnded(reason, text)
