@@ -4,9 +4,9 @@ A personal agent harness for Qwen, Kimi and GLM models: a terminal prompt with
 slash commands first, a local browser window with panels (files, code and diffs,
 tasks, plan, token meter) later. One core library, thin front-ends.
 
-> **Work in progress.** This project is at the very start: only the phase 0
-> pieces listed under "State" exist. There is no usable agent yet, nothing here
-> is stable, and everything may change without notice.
+> **Work in progress.** Phases 1 to 3 are built and tested against a scripted
+> model. No run against a live model has happened yet, so nothing here is stable
+> and everything may change without notice.
 
 ## Roadmap
 
@@ -25,14 +25,59 @@ Each phase closes on a test, not on a date.
 
 ## State
 
-Phase 0 (spike). Built so far:
+Phases 1, 2 and 3 are built; phase 0 (the live spike) still waits on an API key.
+Every test below runs without a network: a scripted provider plays the model.
 
-- `mwm_harness/streaming.py`: turns the endpoint's streamed chunks into one
-  finished turn (text, reasoning text, tool calls reassembled by index, token
-  usage). Pure code, tested without a network.
-- `spike/spike_toolcalls.py`: asks each model for two tool calls in one turn and
-  writes what it measured to `COMPAT.md`.
-- `models.toml`: the model registry (endpoint, key variable, context budget).
+- `messages.py`, `transcript.py`: history and the session file use Anthropic-style
+  content blocks (`text`, `tool_use`, `tool_result`), one JSON object per line.
+  Conversion to the OpenAI wire format happens only for the outgoing request.
+  `--resume` rebuilds a session from that file and repairs unanswered tool calls.
+- `providers.py`, `streaming.py`: streaming client for any OpenAI-compatible
+  `/chat/completions` endpoint; tool-call fragments are reassembled by index.
+- `loop.py`: the turn state machine. Cancel keeps the partial answer and kills
+  the running command's whole process group.
+- `tools/`: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `TodoWrite`. Names and
+  argument names match Claude Code's, so existing hook matchers keep working.
+- `permissions.py`: three modes (`default`, `acceptEdits`, `bypassPermissions`)
+  and a hard deny list that no mode and no hook can lift (force-push, skipping
+  commit hooks, recursive delete of `/` or home, vector-database deletes, broker
+  orders, a hand-curated notes folder).
+- `sandbox.py`: shell commands run inside bubblewrap when it is available: the
+  filesystem is read-only outside the project and the session scratch folder.
+- `hooks.py`: reads Claude-Code-style `settings.json` files and runs their hook
+  commands with the same stdin payload and the same answers (exit 2, `decision:
+  block`, `additionalContext`, `updatedInput`, `permissionDecision`, PermissionRequest
+  `behavior`, `async`). Eight events: SessionStart, UserPromptSubmit, PreToolUse,
+  PostToolUse, PermissionRequest, Stop, PostCompact, SessionEnd. A Stop hook that
+  blocks sends its reason back to the model; `stop_hook_active` is set on the retry.
+  A PreToolUse `allow` does NOT skip the approval prompt unless
+  `hooks_may_approve = true` is set, because a command-rewriting hook answers
+  `allow` for everything it rewrites.
+- `context.py`: system prompt from the rules files it finds (`CLAUDE.md`,
+  `RULES.md`, `AGENTS.md`, with `@file.md` imports) plus the workspace memory
+  index; the context meter reads the endpoint's own usage numbers.
+- `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
+  /models /context /usage /mode /permissions /tasks /hooks /memory /resume /clear
+  /quit`. `mwm -p "question"` runs one headless turn.
+- `spike/real_hooks_check.py`: runs a scripted turn through the hooks installed
+  on this machine and reports which of them fired and blocked.
+
+Not built yet: MCP client, web tools, skills, subagents, compaction, the browser
+panels (phases 4 to 7).
+
+## Use
+
+```bash
+.venv/bin/mwm                     # interactive, in the current directory
+.venv/bin/mwm --mode acceptEdits  # file edits inside the project run without asking
+.venv/bin/mwm --resume last       # continue the newest session of this directory
+.venv/bin/mwm -p "summarise README.md"
+```
+
+Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
+permission mode, sandbox, extra writable paths, hook settings files),
+`models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
+`hooks.json` (hooks in the `settings.json` format).
 
 ## Setup
 

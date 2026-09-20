@@ -1,0 +1,1 @@
+"""Plain terminal front-end."""
