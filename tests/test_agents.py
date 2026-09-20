@@ -131,3 +131,34 @@ def test_unknown_agent_is_a_tool_error(make_session):
         session.tools["Task"].run({"prompt": "x", "subagent_type": "ghost"}, session.tool_ctx)
     )
     assert result.is_error and "reviewer" in result.content
+
+
+def test_headless_agent_run_prints_the_report(tmp_path, monkeypatch, capsys):
+    from mwm_harness import cli
+    from mwm_harness.providers import ScriptedProvider
+
+    project = tmp_path / "project"
+    (project / ".claude" / "agents").mkdir(parents=True)
+    (project / ".claude" / "agents" / "checker.md").write_text(
+        "---\nname: checker\ndescription: d\ntools: WebFetch, Read\n---\nYou verify claims."
+    )
+    turns = [
+        chunks_for(tool_calls=[("WebFetch", {"url": "ftp://not-http/x"})]),
+        chunks_for("VERIFIED: nothing to check."),
+    ]
+    provider = ScriptedProvider(turns)
+    monkeypatch.setattr(cli, "OpenAICompatProvider", lambda secrets: provider)
+    monkeypatch.setenv("MWM_HARNESS_API_KEY", "sk-test")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    argv = ["-p", "check this draft", "--agent", "checker", "--allow", "WebFetch"]
+    argv += ["--cwd", str(project), "--no-hooks", "--no-mcp"]
+    assert cli.main(argv) == 0
+    assert capsys.readouterr().out.strip().endswith("VERIFIED: nothing to check.")
+    offered = {spec["function"]["name"] for spec in provider.requests[0]["tools"]}
+    assert offered == {"WebFetch", "Read"}
+    fetched = provider.requests[1]["messages"][-1]
+    assert "not an http(s) URL" in fetched["content"]  # --allow let WebFetch run with nobody to ask
+    assert (
+        cli.main(["-p", "x", "--agent", "ghost", "--cwd", str(project), "--no-hooks", "--no-mcp"])
+        == 2
+    )

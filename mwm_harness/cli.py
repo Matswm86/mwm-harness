@@ -3,6 +3,7 @@
 mwm                        interactive session in the current directory
 mwm -p "question"          one headless turn; prints the answer, exit 0 on success
 mwm --resume last          continue the newest session of this directory
+mwm -p "task" --agent NAME run one subagent headless and print its report (for scripts and hooks)
 mwm --web                  the same session in a local browser window (127.0.0.1 only)
 """
 
@@ -38,6 +39,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="project directory")
     parser.add_argument("--no-hooks", action="store_true", help="run without any hooks")
     parser.add_argument("--no-mcp", action="store_true", help="run without MCP servers")
+    parser.add_argument(
+        "--agent", metavar="NAME", help="with -p: run this subagent, print its report"
+    )
+    parser.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="tool-name pattern that runs unasked (repeatable); the deny list still applies",
+    )
     parser.add_argument("--web", action="store_true", help="serve the browser panel")
     parser.add_argument("--port", type=int, default=8765, help="panel port (default 8765)")
     parser.add_argument("--version", action="version", version=f"mwm-harness {__version__}")
@@ -48,6 +59,11 @@ async def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     if args.mode:
         settings.permission_mode = args.mode
+    settings.mcp_allow = [*settings.mcp_allow, *args.allow]
+    if args.prompt == "-":
+        args.prompt = sys.stdin.read().strip()  # a hook pipes its prompt in
+    if args.agent and not args.prompt:
+        raise ConfigError("--agent needs -p with the task for the agent")
     models = load_models()
     model_id = args.model or settings.default_model
     if model_id not in models:
@@ -81,6 +97,7 @@ async def run(args: argparse.Namespace) -> int:
         hook_settings=[] if args.no_hooks else None,
         resume_from=resume_from,
         mcp=mcp,
+        models=models,
     )
     holder.append(session)
 
@@ -101,6 +118,18 @@ async def run(args: argparse.Namespace) -> int:
     # Headless: only errors and hook blocks go to stderr, the answer goes to stdout.
     quiet = Printer(color=False)
     session.bus.subscribe(lambda event: quiet(event) if _is_problem(event) else None)
+    if args.agent:
+        # No session hooks here: a Stop gate may be the caller, and must not start itself again.
+        if args.agent not in session.agents:
+            raise ConfigError(f"unknown agent {args.agent}; known: {', '.join(session.agents)}")
+        await session.connect_mcp()
+        try:
+            report = await session.run_agent(args.agent, args.prompt)
+        finally:
+            if session.mcp is not None:
+                await session.mcp.close()
+        print(report.content)
+        return 1 if report.is_error else 0
     await session.start()
     ended = await session.send(args.prompt)
     await session.close()
