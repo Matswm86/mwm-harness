@@ -16,6 +16,8 @@ import contextlib
 import dataclasses
 import hmac
 import secrets
+import shutil
+import subprocess
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -333,12 +335,58 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-async def serve(session: Session, models: dict[str, ModelSpec], port: int) -> None:
+def app_window_command(url: str) -> list[str] | None:
+    """A browser command that shows ``url`` as its own window, without tabs or an address bar."""
+    for name in ("chromium", "chromium-browser", "google-chrome", "brave-browser"):
+        if shutil.which(name):
+            return [name, f"--app={url}"]
+    if shutil.which("flatpak"):
+        listed = subprocess.run(
+            ["flatpak", "list", "--app", "--columns=application"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.split()
+        for app_id in ("com.google.Chrome", "org.chromium.Chromium", "com.brave.Browser"):
+            if app_id in listed:
+                return ["flatpak", "run", app_id, f"--app={url}"]
+    if shutil.which("xdg-open"):
+        return ["xdg-open", url]
+    return None
+
+
+async def serve(
+    session: Session, models: dict[str, ModelSpec], port: int, open_window: bool = False
+) -> None:
     import uvicorn
 
     token = new_token()
     app = create_app(session, models, token, port)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", ws="websockets")
-    print(f"MWM Harness panel: http://127.0.0.1:{port}/#token={token}")
+    url = f"http://127.0.0.1:{port}/#token={token}"
+    print(f"MWM Harness panel: {url}")
     print("The address holds this launch's access token. Ctrl-C ends the session.")
-    await uvicorn.Server(config).serve()
+    server = uvicorn.Server(config)
+    if open_window:
+        # Only on request (mwm --open, the desktop launcher): the person asked for a window.
+        command = app_window_command(url)
+
+        async def show() -> None:
+            while not server.started:
+                await asyncio.sleep(0.05)
+            if command is None:
+                print("no browser found to open; use the address above")
+                return
+            subprocess.Popen(  # noqa: S603
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+        opener = asyncio.create_task(show())
+        await server.serve()
+        opener.cancel()
+        return
+    await server.serve()

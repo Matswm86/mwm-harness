@@ -52,6 +52,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--web", action="store_true", help="serve the browser panel")
     parser.add_argument("--port", type=int, default=8765, help="panel port (default 8765)")
     parser.add_argument(
+        "--open",
+        action="store_true",
+        help="start the panel and show it in its own browser window (implies --web)",
+    )
+    parser.add_argument(
         "--vendor-monaco",
         action="store_true",
         help="download the panel's code viewer once (sha512-checked) for offline use",
@@ -106,14 +111,14 @@ async def run(args: argparse.Namespace) -> int:
     )
     holder.append(session)
 
-    if args.web:
+    if args.web or args.open:
         try:
             from mwm_harness.web.server import serve
         except ImportError as exc:
             raise ConfigError(
                 f"the panel needs the web extra: pip install 'mwm-harness[web]' ({exc})"
             ) from exc
-        await serve(session, models, args.port)
+        await serve(session, models, args.port, open_window=args.open)
         return 0
 
     if not args.prompt:
