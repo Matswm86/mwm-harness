@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 mwm = "mwm_harness.cli:main"
+mwm-jev = "mwm_harness.jev:main"
 
 [project.optional-dependencies]
 web = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
