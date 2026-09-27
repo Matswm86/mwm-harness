@@ -103,7 +103,7 @@ def test_compaction_runs_again_after_half_a_budget_of_growth(make_session):
 
 
 def test_a_model_that_never_stops_calling_tools_hits_the_request_cap(make_session):
-    turns = [chunks_for(tool_calls=[("Glob", {"pattern": "*.md"})]) for _ in range(4)]
+    turns = [chunks_for(tool_calls=[("Glob", {"pattern": f"*.{i}"})]) for i in range(4)]
     session, recorder, provider = make_session(turns)
     session.settings.max_requests_per_turn = 3
     ended = run(session.send("loop"))

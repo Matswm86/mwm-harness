@@ -85,6 +85,30 @@ def test_an_edit_that_cannot_apply_is_refused_without_asking_the_person(make_ses
     assert (session.cwd / "a.py").read_text() == "y = 2\n"
 
 
+def test_the_same_call_three_times_in_a_row_ends_the_turn(make_session):
+    # Seen live 09-20: a 4B model sent one stale Edit 14 times in a row.
+    stale = ("Edit", {"file_path": "a.py", "old_string": "gone", "new_string": "x"})
+    turns = [chunks_for(tool_calls=[stale]) for _ in range(5)] + [chunks_for("Done.")]
+    session, recorder, _ = make_session(turns, approver=FixedApprover(True))
+    (session.cwd / "a.py").write_text("y = 1\n")
+    ended = run(session.send("edit"))
+    results = tool_results(session)
+    assert len(results) == 3
+    assert "Not run" in results[2]["content"] and results[2]["is_error"] is True
+    assert ended.reason == "error" and "3 times in a row" in ended.text
+    assert any("max_identical_calls" in n.text for n in recorder.of(ev.Notice))
+
+
+def test_a_different_call_between_repeats_resets_the_streak(make_session):
+    first = ("Glob", {"pattern": "*.a"})
+    other = ("Glob", {"pattern": "*.b"})
+    turns = [chunks_for(tool_calls=[call]) for call in (first, first, other, first, first)]
+    session, _, _ = make_session([*turns, chunks_for("Done.")])
+    ended = run(session.send("globs"))
+    assert ended.reason == "done"
+    assert not any(r.get("is_error") for r in tool_results(session))
+
+
 def test_read_only_tools_skip_approval(make_session):
     approver = FixedApprover(False)
     turns = [chunks_for(tool_calls=[("Glob", {"pattern": "*.txt"})]), chunks_for("None.")]

@@ -124,6 +124,10 @@ class Settings:
     # Model requests one turn may make before the harness ends it. A weak model
     # can repeat one tool call forever; 0 switches the cap off.
     max_requests_per_turn: int = 60
+    # The same tool call (name and input) this many times in a row ends the turn
+    # without running it. Seen live 09-20: a 4B model sent one stale Edit 14 times
+    # in a row. 0 switches the brake off.
+    max_identical_calls: int = 3
     hooks_may_approve: bool = False  # a PreToolUse "allow" skips the approval prompt
     tool_output_cap: int = 30_000
     mcp_enabled: bool = True

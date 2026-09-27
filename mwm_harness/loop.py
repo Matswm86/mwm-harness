@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -408,6 +409,9 @@ class Session:
 
         stop_blocks = 0
         requests = 0
+        self._last_call: tuple[str, str] | None = None
+        self._identical_calls = 0
+        self._stuck = False
         while True:
             cap = self.settings.max_requests_per_turn
             if cap and requests >= cap:
@@ -474,6 +478,10 @@ class Session:
                 cancelled = await self._run_tools(calls, argument_errors)
                 if cancelled:
                     return self._end("cancelled", message.text())
+                if self._stuck:
+                    note = f"turn ended: the same tool call {self._identical_calls} times in a row"
+                    self.bus.emit(ev.Notice("error", note + " (max_identical_calls)"))
+                    return self._end("error", note)
                 continue
 
             outcome = await self.hooks.run("Stop", stop_hook_active=stop_blocks > 0)
@@ -525,6 +533,18 @@ class Session:
                 )
                 continue
             self.bus.emit(ev.ToolStarted(call["id"], call["name"], call["input"]))
+            if self._repeats(call):
+                self._stuck = True
+                result = ToolResult(
+                    f"Not run: this exact call was made {self._identical_calls} times in a "
+                    "row. The turn ends here.",
+                    True,
+                )
+                self.bus.emit(
+                    ev.ToolFinished(call["id"], call["name"], result.content, result.is_error)
+                )
+                results.append(tool_result_block(call["id"], result.content, result.is_error))
+                continue
             try:
                 result = await self._run_one_tool(call, argument_errors.get(call["id"]))
             except asyncio.CancelledError:
@@ -537,6 +557,14 @@ class Session:
             results.append(tool_result_block(call["id"], result.content, result.is_error))
         self._add(Message("user", results))
         return cancelled
+
+    def _repeats(self, call: Block) -> bool:
+        """Count consecutive identical calls; True once the streak hits the cap."""
+        key = (call["name"], json.dumps(call["input"], sort_keys=True, default=str))
+        self._identical_calls = self._identical_calls + 1 if key == self._last_call else 1
+        self._last_call = key
+        cap = self.settings.max_identical_calls
+        return bool(cap) and self._identical_calls >= cap
 
     async def _run_one_tool(self, call: Block, argument_error: str | None) -> ToolResult:
         name, tool_input = call["name"], dict(call["input"])
