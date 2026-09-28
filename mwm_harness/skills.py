@@ -63,8 +63,14 @@ def skill_roots(cwd: Path, extra: list[str]) -> list[tuple[str, Path]]:
     return roots
 
 
-def load_skills(roots: list[tuple[str, Path]]) -> dict[str, Skill]:
-    """The first root that defines a name wins, so a project skill shadows a user skill."""
+def load_skills(
+    roots: list[tuple[str, Path]], exclude: list[str] | None = None
+) -> dict[str, Skill]:
+    """The first root that defines a name wins, so a project skill shadows a user skill.
+
+    A skill whose full name, or name without its prefix, is in ``exclude`` is left out.
+    """
+    excluded = set(exclude or ())
     skills: dict[str, Skill] = {}
     for prefix, root in roots:
         if not root.is_dir():
@@ -78,6 +84,8 @@ def load_skills(roots: list[tuple[str, Path]]) -> dict[str, Skill]:
             except (OSError, UnicodeDecodeError):
                 continue
             name = fields.get("name") or folder.name
+            if name in excluded or (prefix and f"{prefix}:{name}" in excluded):
+                continue
             name = f"{prefix}:{name}" if prefix else name
             skills.setdefault(name, Skill(name, fields.get("description", ""), path))
     return skills

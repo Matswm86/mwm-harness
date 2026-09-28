@@ -117,7 +117,9 @@ class Session:
         self.skills = (
             skills
             if skills is not None
-            else load_skills(skill_roots(self.cwd, self.settings.skill_dirs))
+            else load_skills(
+                skill_roots(self.cwd, self.settings.skill_dirs), self.settings.skill_exclude
+            )
         )
         self.commands = commands if commands is not None else load_commands(command_roots(self.cwd))
         if self.skills and tools is None:

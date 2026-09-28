@@ -47,6 +47,16 @@ def test_first_root_wins_and_prefix_is_applied(tmp_path):
     assert "- tidy: project version" in skills_prompt(skills)
 
 
+def test_excluded_names_are_left_out_with_or_without_prefix(tmp_path):
+    user, plugin = tmp_path / "u", tmp_path / "g"
+    write_skill(user, "docx", "---\nname: docx\ndescription: d\n---\nD")
+    write_skill(user, "tidy", "---\nname: tidy\ndescription: t\n---\nT")
+    write_skill(plugin, "pdf", "---\nname: pdf\ndescription: p\n---\nP")
+    write_skill(plugin, "audit", "---\nname: audit\ndescription: a\n---\nA")
+    skills = load_skills([("", user), ("core", plugin)], exclude=["docx", "core:pdf"])
+    assert sorted(skills) == ["core:audit", "tidy"]
+
+
 def test_skill_tool_returns_the_body_and_rejects_unknown_names(tmp_path):
     write_skill(tmp_path, "tidy", "---\nname: tidy\ndescription: d\n---\nStep one.")
     tool = SkillTool(load_skills([("", tmp_path)]))

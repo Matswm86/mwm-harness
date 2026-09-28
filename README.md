@@ -208,7 +208,7 @@ exercise the loop, not a way to work.
 Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
 permission mode, sandbox, extra writable and readable paths, `bash_env_keep`,
 `max_requests_per_turn`, hook settings files, `mcp_allow`, `mcp_files`,
-`skill_dirs`, `web_allow_private`, `agent_models`),
+`skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
 `hooks.json` (hooks in the `settings.json` format).
 

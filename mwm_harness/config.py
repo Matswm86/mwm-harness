@@ -135,6 +135,9 @@ class Settings:
     mcp_allow: list[str] = field(default_factory=list)  # tool-name patterns that run unasked
     web_allow_private: bool = False  # WebFetch may reach loopback and private addresses
     skill_dirs: list[str] = field(default_factory=list)  # "folder" or "prefix=folder"
+    # Skill names never offered to the model, e.g. skills whose license bars use outside
+    # the product they ship with. A name matches with or without its "prefix:".
+    skill_exclude: list[str] = field(default_factory=list)
     agent_models: dict[str, str] = field(default_factory=dict)  # e.g. opus = "qwen3.8-max"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
 
