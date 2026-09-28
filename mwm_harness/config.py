@@ -128,6 +128,11 @@ class Settings:
     # without running it. Seen live 09-20: a 4B model sent one stale Edit 14 times
     # in a row. 0 switches the brake off.
     max_identical_calls: int = 3
+    # An Edit or Write is refused after this many edit-then-Bash cycles in a row whose
+    # Bash run failed with no Read, Grep, Glob, web or Task call in between. It catches
+    # a fix loop that alternates different edits and failing runs, which
+    # max_identical_calls cannot see. A successful Bash run or any look resets it. 0 = off.
+    max_blind_fix_cycles: int = 4
     hooks_may_approve: bool = False  # a PreToolUse "allow" skips the approval prompt
     tool_output_cap: int = 30_000
     mcp_enabled: bool = True

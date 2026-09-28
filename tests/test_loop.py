@@ -109,6 +109,44 @@ def test_a_different_call_between_repeats_resets_the_streak(make_session):
     assert not any(r.get("is_error") for r in tool_results(session))
 
 
+def fix_loop(n: int, command: str = "false") -> list:
+    """n cycles of a different Write to a.py followed by one Bash run."""
+    turns = []
+    for i in range(n):
+        turns.append(chunks_for(tool_calls=[("Write", {"file_path": "a.py", "content": f"v{i}"})]))
+        turns.append(chunks_for(tool_calls=[("Bash", {"command": command})]))
+    return turns
+
+
+def test_an_edit_after_four_failed_blind_fix_cycles_is_refused_until_a_read(make_session):
+    # The article case: different edits alternating with failing test runs, no look.
+    turns = [
+        *fix_loop(4),
+        chunks_for(tool_calls=[("Write", {"file_path": "a.py", "content": "v4"})]),
+        chunks_for(tool_calls=[("Read", {"file_path": "a.py"})]),
+        chunks_for(tool_calls=[("Write", {"file_path": "a.py", "content": "v5"})]),
+        chunks_for("Done."),
+    ]
+    session, recorder, _ = make_session(turns, approver=FixedApprover(True))
+    ended = run(session.send("fix it"))
+    results = tool_results(session)
+    refused = results[8]
+    assert refused["is_error"] is True and "4 edit-and-run cycles" in refused["content"]
+    assert any("max_blind_fix_cycles" in n.text for n in recorder.of(ev.Notice))
+    assert "is_error" not in results[10]  # the Write after the Read ran
+    assert (session.cwd / "a.py").read_text() == "v5"
+    assert ended.reason == "done"
+
+
+def test_a_passing_run_resets_the_blind_fix_count(make_session):
+    turns = [*fix_loop(3), *fix_loop(1, command="true"), *fix_loop(3), chunks_for("Done.")]
+    session, _, _ = make_session(turns, approver=FixedApprover(True))
+    run(session.send("fix it"))
+    writes = [r for i, r in enumerate(tool_results(session)) if i % 2 == 0]
+    assert not any(r.get("is_error") for r in writes)
+    assert (session.cwd / "a.py").read_text() == "v2"
+
+
 def test_read_only_tools_skip_approval(make_session):
     approver = FixedApprover(False)
     turns = [chunks_for(tool_calls=[("Glob", {"pattern": "*.txt"})]), chunks_for("None.")]

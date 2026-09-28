@@ -86,6 +86,11 @@ def reminder(text: str) -> str:
     return f"<system-reminder>\n{text}\n</system-reminder>"
 
 
+# Tool names the fix-cycle brake treats as changing code and as looking at something.
+EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
+LOOK_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"})
+
+
 class Session:
     def __init__(
         self,
@@ -414,6 +419,8 @@ class Session:
         self._last_call: tuple[str, str] | None = None
         self._identical_calls = 0
         self._stuck = False
+        self._blind_fixes = 0
+        self._edited_since_run = False
         while True:
             cap = self.settings.max_requests_per_turn
             if cap and requests >= cap:
@@ -547,12 +554,25 @@ class Session:
                 )
                 results.append(tool_result_block(call["id"], result.content, result.is_error))
                 continue
-            try:
-                result = await self._run_one_tool(call, argument_errors.get(call["id"]))
-            except asyncio.CancelledError:
-                _uncancel()
-                cancelled = True
-                result = ToolResult("Interrupted by the user; the process was killed.", True)
+            if self._blind_fix_blocked(call):
+                note = (
+                    f"{self._blind_fixes} edit-and-run cycles in a row failed with no Read, "
+                    "Grep or Glob in between"
+                )
+                self.bus.emit(ev.Notice("warn", f"edit refused: {note} (max_blind_fix_cycles)"))
+                result = ToolResult(
+                    f"Not run: {note}. Read the failing code, the error location or the "
+                    "environment (config, installed packages, env vars) before editing again.",
+                    True,
+                )
+            else:
+                try:
+                    result = await self._run_one_tool(call, argument_errors.get(call["id"]))
+                except asyncio.CancelledError:
+                    _uncancel()
+                    cancelled = True
+                    result = ToolResult("Interrupted by the user; the process was killed.", True)
+                self._track_fix_cycle(call["name"], result.is_error)
             self.bus.emit(
                 ev.ToolFinished(call["id"], call["name"], result.content, result.is_error)
             )
@@ -567,6 +587,24 @@ class Session:
         self._last_call = key
         cap = self.settings.max_identical_calls
         return bool(cap) and self._identical_calls >= cap
+
+    def _blind_fix_blocked(self, call: Block) -> bool:
+        """True when an edit arrives after too many failed edit-then-run cycles."""
+        cap = self.settings.max_blind_fix_cycles
+        return bool(cap) and call["name"] in EDIT_TOOLS and self._blind_fixes >= cap
+
+    def _track_fix_cycle(self, name: str, is_error: bool) -> None:
+        """Count edit-then-Bash cycles whose run failed; a look or a passing run resets."""
+        if name in LOOK_TOOLS:
+            self._blind_fixes = 0
+        elif name in EDIT_TOOLS and not is_error:
+            self._edited_since_run = True
+        elif name == "Bash":
+            if not is_error:
+                self._blind_fixes = 0
+            elif self._edited_since_run:
+                self._blind_fixes += 1
+            self._edited_since_run = False
 
     async def _run_one_tool(self, call: Block, argument_error: str | None) -> ToolResult:
         name, tool_input = call["name"], dict(call["input"])
