@@ -1,6 +1,8 @@
 # MWM Harness
 
-![The MWM Harness browser panel: model and permission-mode pickers, a live context and token meter, the chat, and the tasks, plan and touched-files panels](docs/panel.png)
+![Design mockup of the MWM Harness command center: status strip with model, context meter and permissions; left rail with agents, jobs, tasks, MCP servers and machines; a 3D scene of the agent and its servers above a live code view; a read-only MNQ chart and the chat on the right](docs/command-center.png)
+
+*The phase 8 command center design ([mockup](docs/design/command-center.html), sample data). The panel that runs today is [this one](docs/panel.png).*
 
 A personal agent harness for Qwen, Kimi and GLM models, in the mould of Claude
 Code and Qwen Code: one core library, two thin front-ends on the same session.
@@ -49,8 +51,8 @@ stdio server plays MCP, a mocked transport plays the web.
   the running command's whole process group.
 - `tools/`: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `TodoWrite`. Names and
   argument names match Claude Code's, so existing hook matchers keep working.
-- `permissions.py`: three modes (`default`, `acceptEdits`, `bypassPermissions`)
-  and a hard deny list that no mode and no hook can lift (force-push, skipping
+- `permissions.py`: four modes (`default`, `acceptEdits`, `bypassPermissions`,
+  `plan`) and a hard deny list that no mode and no hook can lift (force-push, skipping
   commit hooks by flag or by `core.hooksPath`, recursive delete of `/` or home
   with `rm` or `find`, a decoded command piped into a shell, vector-database
   deletes, broker orders, a hand-curated notes folder). Broker and delete tools
@@ -100,7 +102,7 @@ stdio server plays MCP, a mocked transport plays the web.
   slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
-  /commands /plan /files /open /agents /compact /init /resume /clear /quit`, plus one per command file and per skill.
+  /commands /plan /files /open /agents /jev /compact /init /resume /clear /quit`, plus one per command file and per skill.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
 - `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
   page, one websocket, the same `Session` as the terminal: chat with streamed
@@ -156,6 +158,12 @@ stdio server plays MCP, a mocked transport plays the web.
   summary as a floor and waits for half a budget of growth, because a prompt
   whose fixed part is over the budget used to compact after every tool call; an
   `Edit` that cannot apply returns its error without asking the person first.
+- Two more brakes on a model that loops, both off at 0: the 3rd identical tool
+  call in a row is not run and the turn ends (`max_identical_calls`, default 3);
+  an `Edit` or `Write` is refused after 4 edit-then-`Bash` cycles in a row whose
+  run failed with no `Read`, `Grep`, `Glob`, web or `Task` call in between
+  (`max_blind_fix_cycles`, default 4). A passing run or any such look resets the
+  count.
 
 Run against a live model so far: the tool-call spike and a bug-fix task, on
 local models only. Phase 7 closes when a subagent on another model returns and
@@ -243,7 +251,9 @@ two changes credited to one. The harness carries that part as procedure.
   Without `--judge` a regex grader runs: repeatable and offline, and crude (it
   can miss a correct reply worded unusually). With 52 cases the 95 % interval on
   a pass rate is about 13 points either side, so only large gaps mean anything.
-  Single turn, no tools: it measures noticing, not agent behaviour.
+  Single turn, no tools: it measures noticing, not agent behaviour. A model's
+  reply is cut at 2000 tokens (`--max-tokens`, 0 = no cap; a `cmd:` model is not
+  capped), and `--resume FILE` continues an interrupted run from its result file.
 
 ## Setup
 
