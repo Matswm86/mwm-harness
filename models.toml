@@ -44,3 +44,15 @@ base_url = "http://localhost:11434/v1"
 key_env = "OLLAMA_API_KEY"
 context_window = 16384
 soft_budget = 12000
+
+# Ornith-1.5-35B-A3B (DeepReinforce, MIT, Qwen 3.5 MoE base, 3B active per token),
+# official Q4_K_M GGUF from ornith-ai/Ornith-1.5-35B-A3B-GGUF, 16k variant built with:
+#   printf 'FROM hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M\nPARAMETER num_ctx 16384\n' > Modelfile
+#   ollama create ornith-1.5-35b-16k -f Modelfile
+# 21.7 GB, so most layers sit in system RAM on the 6 GB laptop GPU.
+[models."ornith-1.5-35b-16k"]
+family = "qwen"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 16384
+soft_budget = 12000
