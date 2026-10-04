@@ -33,7 +33,7 @@ ANSWERS = {
 }
 
 
-def make_client(tmp_path, responses, seen=None):
+def make_client(tmp_path, responses, seen=None, cloudflare=()):
     queue = list(responses)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -43,7 +43,9 @@ def make_client(tmp_path, responses, seen=None):
         return httpx.Response(status, json=body)
 
     log = DecisionLog(tmp_path / "jev" / "decisions.jsonl")
-    client = JevClient(api_key="k-test", log=log, transport=httpx.MockTransport(handler))
+    client = JevClient(
+        api_key="k-test", log=log, transport=httpx.MockTransport(handler), cloudflare=cloudflare
+    )
     return client, log
 
 
@@ -148,3 +150,56 @@ def test_the_judge_tool_asks_for_approval_and_returns_the_decision_id(make_sessi
     (row,) = log.records()
     results = [b for m in session.messages for b in m.blocks() if b["type"] == "tool_result"]
     assert row["id"] in str(results[0]["content"]) and row["caller"] == "harness:Judge"
+
+
+CHOICE_ONLY = {"kind": QUESTIONS["kind"]}
+CF = ("acct-1", "cf-test")
+
+
+def clef_ok():
+    result = {"model": "clef", "answers": {"kind": ANSWERS["kind"]}, "usage": {"input_tokens": 200}}
+    return (200, {"success": True, "result": result, "errors": []})
+
+
+def test_choice_only_calls_go_to_clef_when_cloudflare_is_set(tmp_path):
+    seen = []
+    client, log = make_client(tmp_path, [clef_ok()], seen, cloudflare=CF)
+    verdict = asyncio.run(client.ask("a", CHOICE_ONLY, domain="brain"))
+    assert str(seen[0].url) == jev.CLEF_URL.format(account="acct-1", model="clef")
+    assert seen[0].headers["authorization"] == "Bearer cf-test"
+    assert json.loads(seen[0].content)["model"] == "clef"
+    assert verdict.model == "clef" and verdict.decisions() == {"kind": "trading"}
+    assert [r["kind"] for r in log.records()] == ["decision"]
+
+
+def test_mixed_questions_stay_on_jev_even_with_cloudflare(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, [ok()], seen, cloudflare=CF)
+    asyncio.run(client.ask("a", QUESTIONS))
+    assert seen[0].url == jev.API_URL
+
+
+def test_choice_only_without_cloudflare_uses_jev(tmp_path):
+    seen = []
+    client, _ = make_client(tmp_path, [ok({"kind": ANSWERS["kind"]})], seen)
+    asyncio.run(client.ask("a", CHOICE_ONLY))
+    assert seen[0].url == jev.API_URL
+
+
+def test_a_failed_clef_call_is_logged_and_retried_on_jev(tmp_path):
+    seen = []
+    client, log = make_client(
+        tmp_path, [(401, {"success": False}), ok({"kind": ANSWERS["kind"]})], seen, CF
+    )
+    verdict = asyncio.run(client.ask("a", CHOICE_ONLY))
+    assert seen[1].url == jev.API_URL and json.loads(seen[1].content)["model"] == jev.DEFAULT_MODEL
+    assert verdict.model == "jev-1.13.0"
+    kinds = [r["kind"] for r in log.records()]
+    assert kinds == ["failure", "decision"] and "retried on Jev" in log.records()[0]["error"]
+
+
+def test_an_explicit_clef_model_does_not_fall_back(tmp_path):
+    client, log = make_client(tmp_path, [(401, {"success": False})], cloudflare=CF)
+    with pytest.raises(JevError, match="Clef request failed"):
+        asyncio.run(client.ask("a", CHOICE_ONLY, model="clef"))
+    assert [r["kind"] for r in log.records()] == ["failure"]

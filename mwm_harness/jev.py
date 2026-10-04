@@ -13,6 +13,12 @@ weight Jev gets is earned by its record and not by its vendor's claims.
 API reference read 2026-09-20: POST https://api.typesafe.ai/v1/systemone,
 ``Authorization: Bearer``, body ``{state, model, questions}``; 401 bad key,
 422 bad request, 429 rate limit, 529 overloaded.
+
+Calls made up only of ``choice`` questions go to Cloudflare's Clef (Workers AI,
+same request shape) when Cloudflare credentials are set: on the 2026-10-04
+bake-off it routed 94% of 50 chunks right against Jev's 86%. Yes/no and score
+questions stay on Jev, which had the better Brier score (0.292 vs 0.400). A
+failed Clef call is logged and the question is retried on Jev.
 """
 
 from __future__ import annotations
@@ -38,6 +44,12 @@ from mwm_harness.config import ConfigError, load_secrets, workspace_root
 API_URL = "https://api.typesafe.ai/v1/systemone"
 KEY_ENV = "TYPESAFE_API_KEY"
 DEFAULT_MODEL = "jev-latest"
+AUTO_MODEL = "auto"
+CLEF_MODELS = ("clef", "clef-flash")
+CLEF_DEFAULT = "clef"
+CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
+CF_TOKEN_ENV = "CLOUDFLARE_API_TOKEN"
+CF_ACCOUNT_ENV = "CLOUDFLARE_ACCOUNT_ID"
 RETRY_STATUSES = (429, 529)
 QUESTION_TYPES = ("noul", "choice", "score")
 STATE_PREVIEW_CHARS = 400
@@ -283,12 +295,14 @@ class JevClient:
         transport: httpx.AsyncBaseTransport | None = None,
         retries: int = 3,
         timeout: float = 30.0,
+        cloudflare: tuple[str, str] | tuple[()] | None = None,
     ) -> None:
         self._key = api_key
         self.log = log or DecisionLog()
         self._transport = transport
         self._retries = retries
         self._timeout = timeout
+        self._cf = cloudflare
 
     def _api_key(self) -> str:
         key = self._key or os.environ.get(KEY_ENV) or load_secrets().get(KEY_ENV, "")
@@ -303,43 +317,89 @@ class JevClient:
         domain: str = "other",
         label: str = "",
         caller: str = "",
-        model: str = DEFAULT_MODEL,
+        model: str = AUTO_MODEL,
     ) -> Verdict:
-        """Ask, log, return. A failed call is logged too and raises JevError."""
+        """Ask, log, return. A failed call is logged too and raises JevError.
+
+        ``model="auto"`` sends choice-only calls to Clef when Cloudflare
+        credentials exist and everything else to Jev.
+        """
         problem = check_questions(questions)
         if problem:
             raise JevError(problem)
         if state in ("", None, [], {}):
             raise JevError("state is empty: Jev needs the thing to judge")
+        auto = model == AUTO_MODEL
+        if auto:
+            only_choice = all(q.get("type") == "choice" for q in questions.values())
+            model = CLEF_DEFAULT if only_choice and self._cloudflare() else DEFAULT_MODEL
+        body = {"state": state, "model": model, "questions": questions}
         try:
-            verdict = await self._post({"state": state, "model": model, "questions": questions})
+            if model in CLEF_MODELS:
+                try:
+                    verdict = await self._post_clef(body)
+                except JevError as exc:
+                    if not auto:
+                        raise
+                    self.log.failure(f"{exc}; retried on Jev", domain, label, caller)
+                    body["model"] = DEFAULT_MODEL
+                    verdict = await self._post(body)
+            else:
+                verdict = await self._post(body)
         except JevError as exc:
             self.log.failure(str(exc), domain, label, caller)
             raise
         self.log.decision(verdict, state, questions, domain, label, caller)
         return verdict
 
-    async def _post(self, body: dict[str, Any]) -> Verdict:
-        headers = {"Authorization": f"Bearer {self._api_key()}"}
+    def _cloudflare(self) -> tuple[str, str] | None:
+        """(account id, token) for Workers AI, or None when either is missing."""
+        if self._cf is None:
+            secrets = load_secrets()
+            token = os.environ.get(CF_TOKEN_ENV) or secrets.get(CF_TOKEN_ENV, "")
+            account = os.environ.get(CF_ACCOUNT_ENV) or secrets.get(CF_ACCOUNT_ENV, "")
+            self._cf = (account, token) if token and account else ()
+        return self._cf or None
+
+    async def _post_clef(self, body: dict[str, Any]) -> Verdict:
+        creds = self._cloudflare()
+        if creds is None:
+            raise JevError(f"no Clef credentials: set {CF_TOKEN_ENV} and {CF_ACCOUNT_ENV}")
+        account, token = creds
+        url = CLEF_URL.format(account=account, model=body["model"])
+        return await self._post(body, url=url, token=token, wrapped=True, vendor="Clef")
+
+    async def _post(
+        self,
+        body: dict[str, Any],
+        url: str = API_URL,
+        token: str | None = None,
+        wrapped: bool = False,
+        vendor: str = "Jev",
+    ) -> Verdict:
+        """POST with retries. ``wrapped`` reads Cloudflare's {success, result: {...}} envelope."""
+        headers = {"Authorization": f"Bearer {token or self._api_key()}"}
         started = time.monotonic()
         last = ""
         async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
             for attempt in range(self._retries):
                 try:
-                    response = await client.post(API_URL, json=body, headers=headers)
+                    response = await client.post(url, json=body, headers=headers)
                 except httpx.HTTPError as exc:
                     last = f"{type(exc).__name__}: {exc}"
                 else:
                     if response.status_code == 200:
                         try:
                             data = response.json()
+                            if wrapped:
+                                data = data["result"]
                             answers = data["answers"]
-                        except (ValueError, KeyError) as exc:
-                            raise JevError(f"unreadable answer from Jev: {exc}") from exc
+                        except (ValueError, KeyError, TypeError) as exc:
+                            raise JevError(f"unreadable answer from {vendor}: {exc}") from exc
                         return Verdict(
                             id=uuid.uuid4().hex[:12],
                             answers=answers,
-                            model=str(data.get("model", "")),
+                            model=str(data.get("model", "")) or body["model"],
                             usage=data.get("usage") or {},
                             latency_ms=int((time.monotonic() - started) * 1000),
                         )
@@ -348,7 +408,7 @@ class JevClient:
                         break
                 if attempt + 1 < self._retries:
                     await asyncio.sleep(0.5 * 2**attempt)
-        raise JevError(f"Jev request failed: {last}")
+        raise JevError(f"{vendor} request failed: {last}")
 
 
 def judge(state: Any, questions: dict[str, Any], **fields: Any) -> Verdict:
