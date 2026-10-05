@@ -287,3 +287,7 @@ chmod 600 ~/.config/mwm-harness/secrets.env
 It exits 2 when the key is missing or is a hostname, 1 when any model request
 fails, 0 when every model answered. Raw chunks land in `spike/out/` (ignored by
 git).
+
+## License
+
+MIT, see [LICENSE](LICENSE). Anyone may use, change and share the code, including in commercial products, as long as the copyright notice stays with it.
