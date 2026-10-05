@@ -138,6 +138,9 @@ class Settings:
     mcp_enabled: bool = True
     mcp_files: list[str] = field(default_factory=list)  # default: .mcp.json of cwd and workspace
     mcp_allow: list[str] = field(default_factory=list)  # tool-name patterns that run unasked
+    # Models with a context window below this get MCP tool names only, plus ToolSearch to
+    # load a definition when needed. 0 sends every definition to every model.
+    defer_mcp_tools_below: int = 65_536
     web_allow_private: bool = False  # WebFetch may reach loopback and private addresses
     skill_dirs: list[str] = field(default_factory=list)  # "folder" or "prefix=folder"
     # Skill names never offered to the model, e.g. skills whose license bars use outside

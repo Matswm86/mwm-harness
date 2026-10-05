@@ -67,3 +67,22 @@ base_url = "http://localhost:11434/v1"
 key_env = "OLLAMA_API_KEY"
 context_window = 16384
 soft_budget = 12000
+
+# 32k variants of the two models above (both GGUFs support far more: Ornith 262,144,
+# Spark 1,048,576). The harness's own system prompt and tool list are about 17,000
+# tokens before the first message, so the 16k variants cannot hold a session.
+#   printf 'FROM <same GGUF as the 16k variant>\nPARAMETER num_ctx 32768\n' > Modelfile
+#   ollama create <name>-32k -f Modelfile
+[models."ornith-1.5-35b-32k"]
+family = "qwen"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 32768
+soft_budget = 26000
+
+[models."spark-x2.5-4b-32k"]
+family = "spark"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 32768
+soft_budget = 26000

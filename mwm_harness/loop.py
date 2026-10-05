@@ -43,6 +43,7 @@ from mwm_harness.skills import (
 )
 from mwm_harness.streaming import StreamAssembler
 from mwm_harness.tools import Tool, ToolContext, ToolResult, default_tools
+from mwm_harness.tools.search import ToolSearch
 from mwm_harness.transcript import Transcript, load_messages, usage_to_anthropic
 
 TOOL_CRASHES = (OSError, ValueError, RuntimeError, KeyError, TypeError, UnicodeError)
@@ -190,6 +191,8 @@ class Session:
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
+        self.loaded_tools: set[str] = set()
+        self.tool_search = ToolSearch(self._deferred_tools, self.loaded_tools)
         self._turn_task: asyncio.Task[ev.TurnEnded] | None = None
 
     # ------------------------------------------------------------------ setup
@@ -202,6 +205,27 @@ class Session:
             parts.append(self._mcp_instructions())
             self._system_prompt = "\n\n".join(part for part in parts if part)
         return self._system_prompt
+
+    def _defers_mcp(self) -> bool:
+        limit = self.settings.defer_mcp_tools_below
+        return limit > 0 and self.model.context_window < limit
+
+    def _deferred_tools(self) -> dict[str, Tool]:
+        """MCP tools whose definitions stay out of the request until ToolSearch loads them."""
+        if not self._defers_mcp():
+            return {}
+        return {
+            n: t
+            for n, t in self.tools.items()
+            if n.startswith("mcp__") and n not in self.loaded_tools
+        }
+
+    def _request_specs(self) -> list[dict[str, Any]]:
+        deferred = self._deferred_tools()
+        specs = [tool.spec() for name, tool in self.tools.items() if name not in deferred]
+        if deferred or self.loaded_tools:
+            specs.append(self.tool_search.spec())
+        return specs
 
     def _mcp_instructions(self) -> str:
         if self.mcp is None:
@@ -519,7 +543,7 @@ class Session:
             self._add(Message("user", f"Stop hook feedback:\n{outcome.reason}", is_meta=True))
 
     async def _stream(self, assembler: StreamAssembler) -> None:
-        specs = [tool.spec() for tool in self.tools.values()]
+        specs = self._request_specs()
         messages = self.messages
         if self.settings.observation_pack_limit > 0:
             messages, errors = pack_observations(
@@ -622,7 +646,7 @@ class Session:
         name, tool_input = call["name"], dict(call["input"])
         if argument_error:
             return ToolResult(f"The call was not run: {argument_error}", True)
-        tool = self.tools.get(name)
+        tool = self.tool_search if name == ToolSearch.name else self.tools.get(name)
         if tool is None:
             return ToolResult(f"unknown tool {name}; available: {', '.join(self.tools)}", True)
         problem = tool.check(tool_input)

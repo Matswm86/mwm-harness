@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 
@@ -454,3 +455,51 @@ def test_reasoning_streams_live_under_both_provider_field_names(make_session):
     run(session.send("one"))
     run(session.send("two"))
     assert [e.text for e in recorder.of(ev.ReasoningDelta)] == ["think first", "weigh the options"]
+
+
+def _mcp_tool(name: str, description: str):
+    from mwm_harness.tools import Tool, ToolResult
+
+    class Fake(Tool):
+        read_only = True
+        input_schema = {"type": "object", "properties": {}}
+
+        async def run(self, tool_input, ctx):
+            return ToolResult(f"{name} ran")
+
+    Fake.name = name
+    Fake.description = description
+    return Fake()
+
+
+def test_small_context_model_gets_mcp_names_only_until_toolsearch_loads_one(make_session):
+    session, _, provider = make_session(
+        [
+            chunks_for(tool_calls=[("ToolSearch", {"query": "select:mcp__brain__search_books"})]),
+            chunks_for(tool_calls=[("mcp__brain__search_books", {})]),
+            chunks_for("Done."),
+        ]
+    )
+    session.set_model(dataclasses.replace(session.model, context_window=32_768))
+    session.tools["mcp__brain__search_books"] = _mcp_tool(
+        "mcp__brain__search_books", "search books"
+    )
+    session.tools["mcp__news__get_quote"] = _mcp_tool("mcp__news__get_quote", "live quote")
+    first = {s["name"] for s in session._request_specs()}
+    assert "mcp__brain__search_books" not in first and "ToolSearch" in first
+    assert "mcp__news__get_quote" in session.tool_search.description
+    ended = run(session.send("find a book"))
+    assert ended.reason == "done"
+    after = {s["name"] for s in session._request_specs()}
+    assert "mcp__brain__search_books" in after and "mcp__news__get_quote" not in after
+    assert any(
+        "mcp__brain__search_books ran" in str(b.get("content")) for b in tool_results(session)
+    )
+
+
+def test_large_context_model_gets_every_mcp_definition(make_session):
+    session, _, _ = make_session([chunks_for("Hi.")])
+    session.set_model(dataclasses.replace(session.model, context_window=1_000_000))
+    session.tools["mcp__news__get_quote"] = _mcp_tool("mcp__news__get_quote", "live quote")
+    names = {s["name"] for s in session._request_specs()}
+    assert "mcp__news__get_quote" in names and "ToolSearch" not in names
