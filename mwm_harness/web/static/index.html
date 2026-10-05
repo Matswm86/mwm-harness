@@ -20,7 +20,14 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, sans-serif;
-  display: grid; grid-template-rows: auto 1fr; }
+  display: grid; grid-template-rows: auto auto 1fr; }
+#stabs { display: flex; align-items: flex-end; gap: 4px; padding: 6px 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); overflow-x: auto; }
+#stabs button { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-bottom: none; border-radius: 8px 8px 0 0; padding: 5px 12px; font-size: 13px; background: var(--bg); color: var(--dim); white-space: nowrap; }
+#stabs button.active { background: var(--panel); color: var(--ink); font-weight: 600; border-top: 2px solid var(--accent); }
+#stabs .badge { width: 8px; height: 8px; border-radius: 50%; background: transparent; }
+#stabs .badge.busy { background: var(--accent); } #stabs .badge.waiting { background: var(--warn); }
+#stabs .x { color: var(--dim); padding: 0 2px; } #stabs .x:hover { color: var(--bad); }
+#stabs #newtab { padding: 5px 10px; color: var(--dim); }
 code, pre, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: 13px; }
 header { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; padding: 8px 16px;
   background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -113,6 +120,7 @@ kbd { font-size: 11px; border: 1px solid currentColor; border-radius: 3px; paddi
 </style>
 </head>
 <body>
+<nav id="stabs" role="tablist" aria-label="Sessions"></nav>
 <header>
   <span class="brand">MWM Harness</span>
   <span><label for="model">model</label> <select id="model"></select></span>
@@ -159,6 +167,8 @@ const token = new URLSearchParams(location.hash.slice(1)).get("token") || sessio
 if (token) { try { sessionStorage.setItem("mwm-token", token); } catch (e) {} history.replaceState(null, "", location.pathname); }
 
 let ws = null, retry = 500, busy = false;
+let session = "";              // id of the tab (session) on screen
+let tabList = [];              // [{id, label, model, busy, waiting}] from the server
 let current = null;            // the assistant message being streamed
 let reasoning = null;          // the reasoning block being streamed
 const tools = new Map();       // tool_use_id -> card
@@ -417,14 +427,48 @@ const handlers = {
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
   ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
   CommandOutput: (e) => { const box = el("div", "cmdout"); box.append(el("pre", null, `${e.command}\n${e.text}`)); add(box); },
+  Tabs: (e) => { tabList = e.tabs; renderSessions(); if (e.active) switchTo(e.active); },
+  TabClosed: (e) => { if (e.tab === session) switchTo((tabList.find((t) => t.id !== e.tab) || {}).id || ""); },
 };
 
-function send(message) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(message)); }
+function renderSessions() {
+  const bar = $("stabs"); bar.replaceChildren();
+  tabList.forEach((t, i) => {
+    const b = el("button", t.id === session ? "active" : ""); b.type = "button"; b.setAttribute("role", "tab");
+    b.title = `${t.label} · ${t.model}` + (i < 9 ? ` · Ctrl+${i + 1}` : "");
+    const badge = el("span", "badge" + (t.waiting ? " waiting" : t.busy ? " busy" : ""));
+    badge.title = t.waiting ? "waiting for your approval" : t.busy ? "working" : "";
+    b.append(badge, el("span", null, t.label));
+    if (tabList.length > 1) {
+      const x = el("span", "x", "×"); x.title = "Close tab (Ctrl+W)";
+      x.onclick = (event) => { event.stopPropagation(); closeTab(t.id); }; b.append(x);
+    }
+    b.onclick = () => switchTo(t.id); bar.append(b);
+  });
+  const plus = el("button", null, "+"); plus.id = "newtab"; plus.type = "button"; plus.title = "New tab (Ctrl+T)";
+  plus.onclick = newTab; bar.append(plus);
+}
+function switchTo(id) {
+  if (!id || id === session) { renderSessions(); return; }
+  session = id; openFiles.clear(); activeTab = ""; renderSessions(); send({ type: "state" });
+}
+function newTab() { send({ type: "tab_new" }); }
+function closeTab(id) { send({ type: "tab_close", tab: id }); }
+
+function send(message) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify(message.tab || !session ? message : { ...message, tab: session }));
+}
 function connect() {
   if (!token) { $("conn").textContent = "no access token: open the address printed by mwm --web"; $("conn").className = "down"; return; }
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { retry = 500; $("conn").textContent = "connected"; $("conn").className = ""; };
-  ws.onmessage = (m) => { const e = JSON.parse(m.data); const h = handlers[e.type]; if (h) h(e); };
+  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; };
+  ws.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === "State" && !session) { session = e.tab || ""; renderSessions(); }
+    if (e.tab && e.tab !== session && e.type !== "TabClosed") return;  // another tab: its badge shows it
+    const h = handlers[e.type]; if (h) h(e);
+  };
   ws.onclose = () => { $("conn").textContent = "disconnected, retrying"; $("conn").className = "down";
     setTimeout(connect, retry); retry = Math.min(retry * 2, 8000); };
 }
@@ -452,6 +496,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape" && busy) send({ type: "cancel" });
+  // Ctrl (or Alt, where the browser keeps Ctrl+T and Ctrl+W for itself) + T new, + W close, + 1..9 switch.
+  if (!(event.ctrlKey || event.altKey) || event.shiftKey) return;
+  const key = event.key.toLowerCase();
+  if (key === "t") { event.preventDefault(); newTab(); }
+  else if (key === "w") { event.preventDefault(); if (tabList.length > 1) closeTab(session); }
+  else if (/^[1-9]$/.test(key) && tabList[Number(key) - 1]) { event.preventDefault(); switchTo(tabList[Number(key) - 1].id); }
 });
 connect();
 </script>

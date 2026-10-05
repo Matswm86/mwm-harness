@@ -15,11 +15,12 @@ import asyncio
 import contextlib
 import dataclasses
 import hmac
+import itertools
 import secrets
 import shutil
 import subprocess
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -70,14 +71,14 @@ class CapturedOutput:
         self.rows.append(text)
 
 
-class Panel:
-    """The state shared by all open pages of one session."""
+class Tab:
+    """One session in the panel: its own transcript, model, mode, tasks and approvals."""
 
-    def __init__(self, session: Session, models: dict[str, ModelSpec], token: str) -> None:
+    def __init__(self, panel: Panel, tab_id: str, session: Session, label: str) -> None:
+        self.panel = panel
+        self.id = tab_id
         self.session = session
-        self.models = models
-        self.token = token
-        self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.label = label
         self.pending: dict[str, tuple[dict[str, Any], asyncio.Future[str]]] = {}
         self.turn: asyncio.Task[Any] | None = None
         session.bus.subscribe(self.on_event)
@@ -92,10 +93,11 @@ class Panel:
         if isinstance(event, ev.UsageUpdated):
             payload.update(self.usage())
         self.broadcast(payload)
+        if isinstance(event, ev.TurnStarted | ev.TurnEnded):
+            self.panel.broadcast(self.panel.tabs_payload())
 
     def broadcast(self, payload: dict[str, Any]) -> None:
-        for queue in self.clients:
-            queue.put_nowait(payload)
+        self.panel.broadcast({**payload, "tab": self.id})
 
     def usage(self) -> dict[str, Any]:
         meter = self.session.meter
@@ -116,8 +118,10 @@ class Panel:
         session = self.session
         return {
             "type": "State",
+            "tab": self.id,
+            "label": self.label,
             "model": session.model.id,
-            "models": list(self.models),
+            "models": list(self.panel.models),
             "mode": session.permissions.mode,
             "cwd": str(session.cwd),
             "session_id": session.transcript.session_id,
@@ -140,6 +144,7 @@ class Panel:
         request_id = uuid.uuid4().hex[:12]
         request = {
             "type": "ApprovalRequest",
+            "tab": self.id,
             "id": request_id,
             "tool": tool_name,
             "input": tool_input,
@@ -151,11 +156,13 @@ class Panel:
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (request, future)
         self.broadcast(request)
+        self.panel.broadcast(self.panel.tabs_payload())
         try:
             answer = await future
         finally:
             self.pending.pop(request_id, None)
             self.broadcast({"type": "ApprovalResolved", "id": request_id})
+            self.panel.broadcast(self.panel.tabs_payload())
         if answer == "always":
             self.session.permissions.session_allow.add(tool_name)
         return answer in ("yes", "always")
@@ -188,20 +195,36 @@ class Panel:
             try:
                 if kind == "tree":
                     entries = list_dir(self.session.cwd, relative)
-                    reply.put_nowait({"type": "Tree", "path": relative, "entries": entries})
+                    reply.put_nowait(
+                        {"type": "Tree", "tab": self.id, "path": relative, "entries": entries}
+                    )
                 else:
                     reply.put_nowait(
-                        {"type": "FileContent", **read_file(self.session.cwd, relative)}
+                        {
+                            "type": "FileContent",
+                            "tab": self.id,
+                            **read_file(self.session.cwd, relative),
+                        }
                     )
             except OutsideProject:
                 reply.put_nowait(
-                    {"type": "FileContent", "path": relative, "error": "outside the project"}
+                    {
+                        "type": "FileContent",
+                        "tab": self.id,
+                        "path": relative,
+                        "error": "outside the project",
+                    }
                 )
 
     def start_turn(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
         if self.busy:
             reply.put_nowait(
-                {"type": "Notice", "level": "warn", "text": "a turn is running; cancel it first"}
+                {
+                    "type": "Notice",
+                    "tab": self.id,
+                    "level": "warn",
+                    "text": "a turn is running; cancel it first",
+                }
             )
             return
         self.turn = asyncio.create_task(self.session.send(text))
@@ -209,10 +232,14 @@ class Panel:
     async def command(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> str:
         """Run a slash command. Returns the prompt it stands for, or an empty string."""
         words = text.split()
-        if words[0] in ("/quit", "/exit"):
+
+        def answer(body: str) -> None:
             reply.put_nowait(
-                {"type": "CommandOutput", "command": text, "text": "close the tab; Ctrl-C ends mwm"}
+                {"type": "CommandOutput", "tab": self.id, "command": text, "text": body}
             )
+
+        if words[0] in ("/quit", "/exit"):
+            answer("close the tab; Ctrl-C ends mwm")
             return ""
         if words[0] == "/open" and len(words) > 1:
             await self.handle({"type": "open", "path": text.split(None, 1)[1]}, reply)
@@ -223,15 +250,11 @@ class Panel:
         elif await run_async_command(self.session, text, out):
             self.broadcast(self.state())
         if out.rows:
-            reply.put_nowait(
-                {"type": "CommandOutput", "command": text, "text": "\n".join(out.rows)}
-            )
+            answer("\n".join(out.rows))
             return ""
-        outcome = run_command(self.session, self.models, text, out)  # type: ignore[arg-type]
+        outcome = run_command(self.session, self.panel.models, text, out)  # type: ignore[arg-type]
         if out.rows:
-            reply.put_nowait(
-                {"type": "CommandOutput", "command": text, "text": "\n".join(out.rows)}
-            )
+            answer("\n".join(out.rows))
         if words[0] == "/clear":
             self.broadcast(self.state())
         return outcome if isinstance(outcome, str) else ""
@@ -246,14 +269,172 @@ class Panel:
                 await self.turn
 
 
+SessionFactory = Callable[[Path, ModelSpec], Session]
+
+
+class Panel:
+    """All open pages and all tabs of one launch.
+
+    Every message to the page carries the ``tab`` it belongs to; a message from
+    the page without one goes to the first tab. Tabs share the MCP server
+    processes of the first session; closing a tab never stops them.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        models: dict[str, ModelSpec],
+        token: str,
+        factory: SessionFactory | None = None,
+        max_tabs: int = 6,
+    ) -> None:
+        self.models = models
+        self.token = token
+        self.max_tabs = max_tabs
+        self.mcp = session.mcp
+        self.factory = factory or (lambda cwd, model: _sibling_session(session, cwd, model))
+        self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.tabs: dict[str, Tab] = {}
+        self._numbers = itertools.count(1)
+        self.add_tab(session)
+
+    @property
+    def first(self) -> Tab:
+        return next(iter(self.tabs.values()))
+
+    @property
+    def session(self) -> Session:
+        return self.first.session
+
+    def add_tab(self, session: Session, label: str = "") -> Tab:
+        number = next(self._numbers)
+        tab = Tab(self, f"t{number}", session, label or f"{session.cwd.name} {number}")
+        self.tabs[tab.id] = tab
+        return tab
+
+    def tabs_payload(self) -> dict[str, Any]:
+        return {
+            "type": "Tabs",
+            "max": self.max_tabs,
+            "tabs": [
+                {
+                    "id": tab.id,
+                    "label": tab.label,
+                    "model": tab.session.model.id,
+                    "busy": tab.busy,
+                    "waiting": bool(tab.pending),
+                }
+                for tab in self.tabs.values()
+            ],
+        }
+
+    def broadcast(self, payload: dict[str, Any]) -> None:
+        for queue in self.clients:
+            queue.put_nowait(payload)
+
+    def start_turn(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
+        self.first.start_turn(text, reply)
+
+    async def handle(self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]) -> None:
+        kind = message.get("type")
+        if kind == "tab_new":
+            await self.new_tab(message, reply)
+        elif kind == "tab_close":
+            await self.close_tab(str(message.get("tab")), reply)
+        elif kind == "tab_rename":
+            tab = self.tabs.get(str(message.get("tab")))
+            label = str(message.get("label") or "").strip()[:40]
+            if tab and label:
+                tab.label = label
+                self.broadcast(self.tabs_payload())
+        elif kind == "tabs":
+            reply.put_nowait(self.tabs_payload())
+        else:
+            tab = self.tabs.get(str(message.get("tab"))) or self.first
+            await tab.handle(message, reply)
+
+    async def new_tab(self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]) -> None:
+        def refuse(text: str) -> None:
+            reply.put_nowait({"type": "Notice", "level": "warn", "text": text})
+
+        if len(self.tabs) >= self.max_tabs:
+            refuse(f"{self.max_tabs} tabs are open, the most this panel allows (max_tabs)")
+            return
+        model = self.models.get(str(message.get("model") or ""), self.first.session.model)
+        folder = str(message.get("cwd") or "").strip()
+        cwd = Path(folder).expanduser() if folder else self.first.session.cwd
+        if not cwd.is_dir():
+            refuse(f"no such folder: {cwd}")
+            return
+        session = self.factory(cwd.resolve(), model)
+        await session.start()
+        tab = self.add_tab(session)
+        if any(t.session.cwd == tab.session.cwd for t in self.tabs.values() if t is not tab):
+            tab.broadcast(
+                {
+                    "type": "Notice",
+                    "level": "warn",
+                    "text": "another tab works in this folder; edits can collide",
+                }
+            )
+        self.broadcast(tab.state())
+        self.broadcast({**self.tabs_payload(), "active": tab.id})
+
+    async def close_tab(self, tab_id: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
+        tab = self.tabs.get(tab_id)
+        if tab is None:
+            return
+        if len(self.tabs) == 1:
+            reply.put_nowait({"type": "Notice", "level": "warn", "text": "the last tab stays open"})
+            return
+        del self.tabs[tab_id]
+        await tab.shutdown()
+        tab.session.mcp = None  # shared with the other tabs; the panel stops it at the end
+        await tab.session.close()
+        self.broadcast({"type": "TabClosed", "tab": tab_id})
+        self.broadcast(self.tabs_payload())
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """What a page that just connected needs: every tab's state, then the tab list."""
+        return [tab.state() for tab in self.tabs.values()] + [self.tabs_payload()]
+
+    async def shutdown(self, close_sessions: bool) -> None:
+        for tab in list(self.tabs.values()):
+            await tab.shutdown()
+            if close_sessions:
+                tab.session.mcp = None
+                await tab.session.close()
+        if close_sessions and self.mcp is not None:
+            await self.mcp.close()
+
+
+def _sibling_session(template: Session, cwd: Path, model: ModelSpec) -> Session:
+    """A new session that runs like ``template``: same provider, settings, hooks and MCP pool."""
+    same_folder = cwd == template.cwd
+    return Session(
+        cwd=cwd,
+        model=model,
+        provider=template.provider,
+        settings=template.settings,
+        hook_settings=template._hook_settings_arg,
+        sessions_dir=template._sessions_dir,
+        mcp=template.mcp,
+        skills=template.skills if same_folder else None,
+        commands=template.commands if same_folder else None,
+        agents=template.agents if same_folder else None,
+        models=template.models,
+    )
+
+
 def create_app(
     session: Session,
     models: dict[str, ModelSpec],
     token: str,
     port: int,
     manage_session: bool = True,
+    factory: SessionFactory | None = None,
 ) -> FastAPI:
-    panel = Panel(session, models, token)
+    panel = Panel(session, models, token, factory, session.settings.max_tabs)
     origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
 
     @contextlib.asynccontextmanager
@@ -261,9 +442,7 @@ def create_app(
         if manage_session:
             await session.start()
         yield
-        await panel.shutdown()
-        if manage_session:
-            await session.close()
+        await panel.shutdown(close_sessions=manage_session)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
@@ -305,7 +484,8 @@ def create_app(
             return
         await websocket.accept()
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        queue.put_nowait(panel.state())
+        for payload in panel.snapshot():
+            queue.put_nowait(payload)
         panel.clients.add(queue)
 
         async def pump() -> None:
