@@ -56,3 +56,14 @@ base_url = "http://localhost:11434/v1"
 key_env = "OLLAMA_API_KEY"
 context_window = 16384
 soft_budget = 12000
+
+# Spark-X2.5-4B (iFLYTEK SparkLLM, Apache 2.0, 4.1B dense, hybrid sliding-window
+# attention), official Q4_K_M GGUF from XHToken/Spark-X2.5-4B-GGUF, 16k variant built with:
+#   printf 'FROM hf.co/XHToken/Spark-X2.5-4B-GGUF:Q4_K_M\nPARAMETER num_ctx 16384\n' > Modelfile
+#   ollama create spark-x2.5-4b-16k -f Modelfile
+[models."spark-x2.5-4b-16k"]
+family = "spark"
+base_url = "http://localhost:11434/v1"
+key_env = "OLLAMA_API_KEY"
+context_window = 16384
+soft_budget = 12000

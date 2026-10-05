@@ -10,6 +10,7 @@ Every value below is measured, none is assumed. Raw chunks: `spike/out/`.
 | gemma4:e4b | yes | yes | no | tool_calls | 138 / 33 | 133 | 23.5s for 2 requests |
 | qwen3-vl:8b | yes | yes | yes | tool_calls | 238 / 263 | 237 | 65.5s for 2 requests |
 | ornith-1.5-35b-16k | yes | yes | yes | tool_calls | 357 / 85 | 0 | 114.6s for 2 requests (2026-10-04, includes a model load) |
+| spark-x2.5-4b-16k | yes | yes | yes | tool_calls | 166 / 75 | 161 | 2.1s for 2 requests (2026-10-05, Ollama 0.34.4) |
 
 ## 2026-10-04: Ornith-1.5-35B-A3B vs qwen3-vl-4b-instruct-16k on two bug-fix tasks
 
@@ -54,3 +55,23 @@ Ornith's first request pays for the ~12k-token harness prompt; later requests
 reuse the prompt cache. The 100-170 s per step measured on 2026-10-04 came from
 the shared Ollama (video ingest, 1-minute keep-alive reloads), not from the model.
 n = 1 per cell in this rerun.
+
+## 2026-10-05: Spark-X2.5-4B on the same two bug-fix tasks
+
+Spark = official `XHToken/Spark-X2.5-4B-GGUF` Q4_K_M (iFLYTEK SparkLLM, Apache 2.0,
+4.1B dense) as the 16k variant `spark-x2.5-4b-16k`. Its `spark2_5` architecture
+needs Ollama 0.34.1 or later, so Ollama went from 0.34.0 to 0.34.4 (old copy kept
+at `~/.local/opt/ollama-0.34.0-backup`). Loaded: 2.8 GB, 100% GPU at 16k. Same
+runner, prompts, flags and 900 s cap as the Ornith test; model preloaded, no other
+Ollama load.
+
+| model | task a pass | task b pass | requests per pass | seconds per pass |
+|---|---|---|---|---|
+| spark-x2.5-4b-16k | 3/3 | 3/3 | a 4 / b 6-9 | a 12-51, b 69-190 |
+
+- All six fixes are the expected ones: strip "," before `float()`; average the
+  two middle values for even-length lists. Tests untouched (checked by `cmp`).
+- n = 3 per cell on two easy tasks: 6/6 vs Ornith 5/6 and the 4B 3/6 is a
+  direction, not a significant gap. The 4B's 3/6 came from the contaminated
+  2026-10-04 runs; its clean reruns passed both tasks in 177-181 s.
+
