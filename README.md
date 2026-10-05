@@ -136,6 +136,11 @@ stdio server plays MCP, a mocked transport plays the web.
   writes a summary that replaces the history; the `PostCompact` hooks fire with
   the summary; `--resume` starts from the last summary. A failed summary keeps
   the history. `auto_compact = false` switches the automatic part off.
+- Large tool results (ObservationPack, from SoL-Pi, arXiv 2609.20519): a result
+  over 10 KiB goes to the model in full on the next two requests; later requests
+  carry its first and last 512 characters and the path of a scratch file with
+  the exact text, which the model reads back with `Read`. The history and the
+  transcript keep the full text. `observation_pack_limit = 0` switches it off.
 - Plan mode (`/plan`, `--mode plan`): only reading tools run; the model hands in
   its plan with `ExitPlanMode`, and your yes returns to the mode you came from.
 - `spike/panel_demo.py`: the panel with a scripted model, for a look without a key.

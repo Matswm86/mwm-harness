@@ -27,6 +27,7 @@ from mwm_harness.messages import (
     text_block,
     tool_result_block,
 )
+from mwm_harness.observation_pack import pack_observations
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
 from mwm_harness.sandbox import Sandbox
@@ -519,7 +520,16 @@ class Session:
 
     async def _stream(self, assembler: StreamAssembler) -> None:
         specs = [tool.spec() for tool in self.tools.values()]
-        stream = self.provider.stream(self.model, self.system_prompt, self.messages, specs)
+        messages = self.messages
+        if self.settings.observation_pack_limit > 0:
+            messages, errors = pack_observations(
+                messages, self.tool_ctx.scratch, self.settings.observation_pack_limit
+            )
+            for error in errors:
+                self.bus.emit(
+                    ev.Notice("warn", f"observation archive failed, sent in full: {error}")
+                )
+        stream = self.provider.stream(self.model, self.system_prompt, messages, specs)
         async for chunk in stream:
             assembler.feed(chunk)
             for choice in chunk.get("choices") or []:

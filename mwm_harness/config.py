@@ -145,6 +145,9 @@ class Settings:
     skill_exclude: list[str] = field(default_factory=list)
     agent_models: dict[str, str] = field(default_factory=dict)  # e.g. opus = "qwen3.8-max"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
+    # Tool results over this many characters are sent in full for two requests, then as an
+    # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
+    observation_pack_limit: int = 10 * 1024
 
 
 def load_settings(path: Path | None = None) -> Settings:
