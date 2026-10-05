@@ -41,3 +41,16 @@ must stay untouched. Pass = the program/test result, checked by script.
   4B runs, and Ollama's 1-minute keep-alive reloaded Ornith from disk at the
   start of most runs. Pass counts and request counts are not affected.
 - n = 3 per cell: 5/6 vs 3/6 overall is a direction, not a significant gap.
+
+### 2026-10-05 clean rerun (nothing else on Ollama, model preloaded before the runs)
+
+| model | task a | task b | steps (requests) | seconds per step |
+|---|---|---|---|---|
+| qwen3-vl-4b-instruct-16k | PASS 177 s | PASS 181 s | 4 / 5 | 13-70 |
+| ornith-1.5-35b-16k | PASS 109 s | PASS 115 s | 5 / 4 | first 68-70, then 6-26 |
+
+Loaded placement: Ornith 22 GB, 84% CPU / 16% GPU; the 4B at 16k spills 38% to CPU.
+Ornith's first request pays for the ~12k-token harness prompt; later requests
+reuse the prompt cache. The 100-170 s per step measured on 2026-10-04 came from
+the shared Ollama (video ingest, 1-minute keep-alive reloads), not from the model.
+n = 1 per cell in this rerun.
