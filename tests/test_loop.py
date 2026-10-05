@@ -443,3 +443,14 @@ def test_a_rejected_plan_keeps_plan_mode_on(make_session):
     assert tool_results(session)[0]["is_error"]
     assert session.permissions.mode == "plan"
     assert recorder.of(ev.PlanResolved)[0].approved is False
+
+
+def test_reasoning_streams_live_under_both_provider_field_names(make_session):
+    ollama_style = [
+        {"choices": [{"delta": {"reasoning": "weigh the options"}}]},
+        *chunks_for("Done."),
+    ]
+    session, recorder, _ = make_session([chunks_for("Hi.", reasoning="think first"), ollama_style])
+    run(session.send("one"))
+    run(session.send("two"))
+    assert [e.text for e in recorder.of(ev.ReasoningDelta)] == ["think first", "weigh the options"]

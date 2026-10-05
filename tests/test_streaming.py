@@ -130,3 +130,20 @@ def test_parse_sse_line_skips_non_payload_lines(line):
 def test_parse_sse_line_reads_a_data_line():
     chunk = _chunk({"content": "hi"})
     assert parse_sse_line("data: " + json.dumps(chunk)) == chunk
+
+
+def test_terminal_prints_thinking_dimmed_and_hides_it_after_think_off(capsys):
+    from mwm_harness import events as ev
+    from mwm_harness.repl.terminal import Printer, run_command
+
+    out = Printer(color=False)
+    out(ev.ReasoningDelta("step one"))
+    out(ev.TextDelta("Answer."))
+    printed = capsys.readouterr().out
+    assert printed == "[thinking]\nstep one\n[end thinking]\nAnswer."
+
+    run_command(None, {}, "/think off", out)
+    capsys.readouterr()
+    out(ev.ReasoningDelta("hidden"))
+    out(ev.TextDelta("Visible."))
+    assert capsys.readouterr().out == "Visible."

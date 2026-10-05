@@ -536,8 +536,10 @@ class Session:
                 delta = choice.get("delta") or {}
                 if delta.get("content"):
                     self.bus.emit(ev.TextDelta(delta["content"]))
-                if delta.get("reasoning_content"):
-                    self.bus.emit(ev.ReasoningDelta(delta["reasoning_content"]))
+                # Alibaba and DeepSeek send reasoning_content, Ollama and OpenRouter send reasoning.
+                thinking = delta.get("reasoning_content") or delta.get("reasoning")
+                if thinking:
+                    self.bus.emit(ev.ReasoningDelta(thinking))
 
     # ------------------------------------------------------------------ tools
 

@@ -29,6 +29,7 @@ HELP = """\
 /models               list configured models
 /context  /usage      context meter and session token totals
 /mode [name]          show or set the permission mode (default, acceptEdits, bypassPermissions, plan)
+/think [on|off]       show or hide the model's thinking (dimmed)
 /plan [off]           plan mode: reading tools only until you approve a plan; shows the last plan
 /permissions          mode, sandbox state and the hard deny list
 /tasks                the current task list
@@ -76,19 +77,43 @@ class Printer:
 
     def __init__(self, color: bool) -> None:
         self.color = color
+        self.show_thinking = True
         self._mid_line = False
+        self._thinking = False
 
     def paint(self, code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if self.color else text
 
     def line(self, text: str = "") -> None:
+        self._end_thinking()
         if self._mid_line:
             print()
             self._mid_line = False
         print(text)
 
+    def _end_thinking(self) -> None:
+        """Close a thinking stream: reset the colour and end its line."""
+        if not self._thinking:
+            return
+        self._thinking = False
+        if self._mid_line:
+            print()
+        print(self.paint(DIM, "[end thinking]"))
+        self._mid_line = False
+
     def __call__(self, event: ev.Event) -> None:
-        if isinstance(event, ev.TextDelta):
+        if isinstance(event, ev.ReasoningDelta):
+            if not self.show_thinking:
+                return
+            if not self._thinking:
+                if self._mid_line:
+                    print()
+                print(self.paint(DIM, "[thinking]"))
+                self._thinking = True
+            print(self.paint(DIM, event.text), end="", flush=True)
+            self._mid_line = not event.text.endswith("\n")
+        elif isinstance(event, ev.TextDelta):
+            self._end_thinking()
             print(event.text, end="", flush=True)
             self._mid_line = not event.text.endswith("\n")
         elif isinstance(event, ev.ToolStarted):
@@ -179,6 +204,12 @@ def run_command(
         elif argument:
             out.line(f"unknown mode; choose one of {', '.join(MODES)}")
         out.line(f"permission mode: {session.permissions.mode}")
+    elif name == "/think":
+        if argument in ("on", "off"):
+            out.show_thinking = argument == "on"
+        elif argument:
+            out.line("usage: /think [on|off]")
+        out.line(f"thinking display: {'on' if out.show_thinking else 'off'}")
     elif name == "/plan":
         if argument == "off":
             session.set_mode("default")
