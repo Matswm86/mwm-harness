@@ -31,10 +31,11 @@ Each phase closes on a test, not on a date.
 | 7 | Subagents on a per-agent model, compaction, resume | A subagent on another model returns; a long session compacts and continues |
 | 8 | Terminal front-end to the standard of Claude Code and Qwen Code: answers streamed as rendered markdown, a spinner with time and tokens, a framed input with history and slash completion, tool cards, coloured diff approvals, a status line | A bug-fix task reads like it does in those tools; every slash command works; the core and its tests are untouched |
 
-Where each phase stands: 1 to 6 are closed. 0 is half closed: four local models
+Where each phase stands: 1 to 6 are closed. 0 is half closed: six local models
 passed the parallel tool-call spike (`COMPAT.md`), the hosted models wait on a
 key. 2 closed on a local model. 7 is built, its closing tests need a hosted
-model. 8 has not started. The panel does not render markdown in answers yet.
+model. 8 has not started. The panel renders only paragraphs, fenced code and
+inline code in answers: no headings, lists, bold or links yet.
 
 ## State
 
@@ -92,6 +93,11 @@ stdio server plays MCP, a mocked transport plays the web.
   `notifications/cancelled`. Image results are saved to the scratch folder and
   named in the result. A tool marked `readOnlyHint` runs unasked; every other MCP
   tool asks, unless a pattern in `mcp_allow` covers it. The deny list still wins.
+  A model whose context window is under `defer_mcp_tools_below` (65,536 tokens by
+  default, so every local entry of `models.toml`) gets only the MCP tool names,
+  listed in the description of the `ToolSearch` tool, and loads a definition with
+  it when it wants to call one; a loaded tool stays in the request for the rest
+  of the session. `0` sends every definition to every model.
 - `tools/web.py`: `WebFetch` (HTML to text with headings, lists and link targets;
   5 MB cap; each redirect hop re-checked; loopback and private addresses refused
   unless `web_allow_private = true`) and `WebSearch` (DuckDuckGo's HTML page, or
@@ -101,8 +107,10 @@ stdio server plays MCP, a mocked transport plays the web.
   `Skill` tool loads a body. Command files (`.claude/commands/**/*.md`) become
   slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
-  /models /context /usage /mode /permissions /tasks /hooks /memory /mcp /skills
+  /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
   /commands /plan /files /open /agents /jev /compact /init /resume /clear /quit`, plus one per command file and per skill.
+  A model's reasoning text (the `reasoning_content` or `reasoning` field of the
+  stream) prints dimmed as it arrives; `/think off` hides it.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
 - `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
   page, one websocket, the same `Session` as the terminal: chat with streamed
@@ -114,6 +122,11 @@ stdio server plays MCP, a mocked transport plays the web.
   token that travels in the address fragment, so it never reaches a log or a
   `Referer`. A page that opens late gets the history and any open approval.
   The API does not expose the plan's credit balance, so the bar counts requests.
+  The `+` button (Ctrl+T) opens another session in the same window, up to
+  `max_tabs` (6). Each tab has its own transcript, model, permission mode, task
+  list and approvals, a mark shows which tab is busy or waiting for an answer,
+  and the tabs share the MCP server processes of the first one. The last tab
+  cannot be closed.
 - `preview.py` and the panel's file views: a file tree of the project, tabs of
   open files, a list of files the tools touched, and a read-only code viewer
   (Monaco 0.56.0 from jsdelivr, or from the machine itself after
@@ -157,7 +170,10 @@ stdio server plays MCP, a mocked transport plays the web.
   never the decider. Every call goes to an append-only log; the real result is
   recorded later and `mwm-jev report` gives the hit rate per domain and label,
   with a Brier score for yes/no questions. The tool asks for approval because
-  the text it judges leaves the machine. Key: `TYPESAFE_API_KEY`.
+  the text it judges leaves the machine. Key: `TYPESAFE_API_KEY`. A call that
+  asks only for one option of a closed set goes to Cloudflare's Clef (Workers AI)
+  instead when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set; yes/no
+  and level questions stay on Jev, and a failed Clef call is retried on Jev.
 - Loop guards found by the first live runs: a turn ends after 60 model requests
   (`max_requests_per_turn`); compaction keeps the prompt size right after a
   summary as a floor and waits for half a budget of growth, because a prompt
@@ -204,10 +220,12 @@ Exit codes of `mwm`: 2 = no API key, 3 = any other configuration mistake
 
 ### A local model
 
-`models.toml` carries two entries for Ollama's OpenAI-compatible endpoint. Any
-non-empty `OLLAMA_API_KEY` will do. Two things to know: Ollama cuts a prompt
-that is longer than the model's context length without saying so, and its `/v1`
-endpoint cannot raise that length per request, so build a variant once:
+`models.toml` carries six entries for Ollama's OpenAI-compatible endpoint: 16k
+variants of qwen3-vl 4B, gemma4 e4b, Ornith-1.5-35B-A3B and Spark-X2.5-4B, and
+32k variants of the last two. Any non-empty `OLLAMA_API_KEY` will do. Two things
+to know: Ollama cuts a prompt that is longer than the model's context length
+without saying so, and its `/v1` endpoint cannot raise that length per request,
+so build a variant once:
 
 ```bash
 printf 'FROM qwen3-vl:4b-instruct\nPARAMETER num_ctx 16384\n' > Modelfile
