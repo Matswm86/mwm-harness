@@ -128,7 +128,24 @@ stdio server plays MCP, a mocked transport plays the web.
   Yahoo NQ=F as a fallback marked delayed; credentials come from
   `PROJECT_X_USERNAME` / `PROJECT_X_API_KEY` or the file in the `chart_env_file`
   setting and never reach the page. Background jobs, machines, handoffs and
-  MASTER_TODO have a place in the layout and no data source yet. Slash commands work in
+  MASTER_TODO have a place in the layout and no data source yet.
+  Voice: the mic button (Alt+M) records in the browser and the panel server
+  transcribes on this machine with faster-whisper (`pip install -e .[voice]`;
+  the medium model on a CUDA GPU, else the small one on the CPU; settings
+  `voice_model`, `voice_device`, `voice_language`). The text lands in the message
+  box for checking; "send what I say" sends it at once, "read answers aloud" uses
+  the browser's speech voice. "slash plan" at the start becomes `/plan`.
+  Mods: F1-F9 and a button bar run one action each from `mods.toml` (config folder,
+  else `mwm_harness/mods.default.toml`): `shell` through the Bash tool and its
+  approvals (`confirm = true` always asks), `agent` on the last answer or the
+  uncommitted diff (a result card, not part of the conversation), `command`
+  (`/compact`, a command file) or `prompt`. Templates `{tab.changed}`,
+  `{tab.repo}`, `{prompt}`; a mod that cannot run says why on its greyed button.
+  Tabs: the new-tab dialog takes a folder, a model and "isolated" (a git worktree
+  on its own branch under `worktree_dir`, left on disk when the tab closes);
+  double-click renames; Ctrl+Shift+T reopens the last closed tab from its
+  transcript; a tab switched to mid-turn replays the running turn; tabs on the
+  same local model queue with a note; `/tab` works in the panel and the terminal. Slash commands work in
   the message box. The server binds to 127.0.0.1, refuses any `Host` header but
   its own, refuses a websocket from another `Origin`, and needs a per-launch
   token that travels in the address fragment, so it never reaches a log or a

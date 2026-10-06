@@ -142,7 +142,11 @@ class Settings:
     # load a definition when needed. 0 sends every definition to every model.
     defer_mcp_tools_below: int = 65_536
     max_tabs: int = 6  # sessions the browser panel holds open at once
+    worktree_dir: str = "~/.local/share/mwm-harness/worktrees"  # where isolated panel tabs live
     chart_env_file: str = ""  # .env with PROJECT_X_USERNAME/PROJECT_X_API_KEY for the panel chart
+    voice_model: str = "medium"  # faster-whisper model for the panel mic button
+    voice_device: str = "auto"  # auto (CUDA, else the small model on CPU) | cuda | cpu
+    voice_language: str = ""  # "" detects the language per clip; "no" or "en" forces one
     web_allow_private: bool = False  # WebFetch may reach loopback and private addresses
     skill_dirs: list[str] = field(default_factory=list)  # "folder" or "prefix=folder"
     # Skill names never offered to the model, e.g. skills whose license bars use outside

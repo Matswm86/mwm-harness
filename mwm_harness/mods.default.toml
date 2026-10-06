@@ -1,0 +1,76 @@
+# Mods: F1-F9 in the panel, one press, one action, same approvals as the model.
+# Copy to ~/.config/mwm-harness/mods.toml to change them; the panel reads it again on save.
+# Kinds and template values: see mwm_harness/mods.py.
+
+[[mod]]
+key = "F1"
+label = "Save work"
+kind = "shell"
+note = "Commits only the files this tab changed. No push."
+run = "git -C {tab.cwd} add -- {tab.changed} && git -C {tab.cwd} commit -m checkpoint:{tab.label}"
+
+[[mod]]
+key = "F2"
+label = "Push"
+kind = "shell"
+confirm = true
+ask = "the commit message"
+note = "Commits this tab's files with the message in the box, then pushes. Always asks first."
+run = "git -C {tab.cwd} add -- {tab.changed} && git -C {tab.cwd} commit -m {prompt} && git -C {tab.cwd} push"
+
+[[mod]]
+key = "F3"
+label = "Handoff"
+kind = "command"
+note = "Runs the handoff command file for this tab."
+file = "handoff"
+args = "{tab.label}"
+
+[[mod]]
+key = "F4"
+label = "Devil's advocate"
+kind = "agent"
+agent = "critic"
+on = "last_answer"
+note = "Read-only. The critic attacks the last answer; result card only."
+instruction = "Attack this answer: find the weakest claim, the missing evidence and the rival explanation. Verdict first."
+
+[[mod]]
+key = "F5"
+label = "Claim check"
+kind = "agent"
+agent = "claim-verifier"
+on = "last_answer"
+note = "Each claim: VERIFIED, UNVERIFIED or CONTRADICTED with a source quote."
+instruction = "Verify the factual claims in this answer against primary sources."
+
+[[mod]]
+key = "F6"
+label = "Code review"
+kind = "agent"
+agent = "code-reviewer"
+on = "uncommitted_diff"
+lock = "review"
+note = "Reviews this tab's uncommitted diff. If another tab holds the review lock, this shows SKIPPED."
+instruction = "Review this uncommitted diff: BLOCK, NEEDS-CHANGES or SHIP, findings first."
+
+[[mod]]
+key = "F7"
+label = "Compact"
+kind = "command"
+builtin = "/compact"
+note = "Summarises the history to free context."
+
+[[mod]]
+key = "F8"
+label = "Plan mode"
+kind = "command"
+builtin = "/plan"
+note = "Only reading tools run until you approve the plan."
+
+[[mod]]
+key = "F9"
+label = "Brief me"
+kind = "prompt"
+note = "Market regime and today's calendar, read-only."
+text = "MNQ regime and today's economic calendar from the market-news tools, read-only, 5 lines."

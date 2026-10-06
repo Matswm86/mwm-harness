@@ -12,6 +12,8 @@ that is generated for each launch and printed once in the terminal.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import dataclasses
 import hmac
@@ -19,10 +21,12 @@ import itertools
 import secrets
 import shutil
 import subprocess
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse, Response
@@ -30,18 +34,33 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mwm_harness import events as ev
-from mwm_harness.config import ModelSpec
+from mwm_harness.config import ModelSpec, config_dir
 from mwm_harness.loop import Session
 from mwm_harness.mcp_client import McpManager
+from mwm_harness.mods import Mod, ModError, ModSet, fill, load_mods, tab_values, why_not
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
+from mwm_harness.voice import Transcriber
 from mwm_harness.web.market import MarketFeed
 from mwm_harness.web.vendor import design_dir, design_ready, monaco_dir, monaco_ready
 
 STATIC = Path(__file__).parent / "static"
 POLICY_VIOLATION = 1008
+MAX_AUDIO_B64 = 8 * 1024 * 1024 * 4 // 3  # an 8 MB clip, base64-encoded
 CDN = "https://cdn.jsdelivr.net"  # code viewer, 3D library and fonts load from here; see index.html
 QUIET_EVENTS = (ev.HookContext,)  # large and only useful in the transcript
+LIVE_EVENTS = (
+    ev.TextDelta,
+    ev.ReasoningDelta,
+    ev.ToolStarted,
+    ev.ToolFinished,
+    ev.Notice,
+    ev.HookBlocked,
+    ev.SubagentStarted,
+    ev.SubagentFinished,
+)
+MAX_LIVE_EVENTS = 2000
+CLOSED_TABS_KEPT = 10
 
 
 def mcp_servers(manager: McpManager | None) -> list[dict[str, Any]]:
@@ -92,6 +111,35 @@ class CapturedOutput:
         self.rows.append(text)
 
 
+def first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "(no output)")[:300]
+
+
+class WorktreeError(Exception):
+    pass
+
+
+async def _git(cwd: Path, *args: str) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "git", "-C", str(cwd), *args, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    out, err = await process.communicate()
+    if process.returncode != 0:
+        raise WorktreeError(err.decode(errors="replace").strip() or f"git {args[0]} failed")
+    return out.decode().strip()
+
+
+async def make_worktree(cwd: Path, root: Path, number: int) -> tuple[Path, str]:
+    """A new git worktree of ``cwd``'s repository on its own branch; returns (folder, branch)."""
+    top = Path(await _git(cwd, "rev-parse", "--show-toplevel"))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    branch = f"mwm/tab{number}-{stamp}"
+    target = root / f"{top.name}-tab{number}-{stamp}"
+    root.mkdir(parents=True, exist_ok=True)
+    await _git(top, "worktree", "add", "-b", branch, str(target), "HEAD")
+    return target / cwd.relative_to(top), branch
+
+
 class Tab:
     """One session in the panel: its own transcript, model, mode, tasks and approvals."""
 
@@ -103,6 +151,12 @@ class Tab:
         self.pending: dict[str, tuple[dict[str, Any], asyncio.Future[str]]] = {}
         self.turn: asyncio.Task[Any] | None = None
         self.ended = False  # TurnEnded seen while the turn's task is still finishing
+        # The running turn as the page saw it, so a page that switches here mid-turn can replay it.
+        self.live: list[dict[str, Any]] = []
+        self.turn_base = 0  # messages that existed before the running turn began
+        self.worktree = ""  # set when the tab works in its own git worktree
+        self.written: set[Path] = set()  # files this tab's Write/Edit calls changed
+        self._writing: dict[str, str] = {}
         session.bus.subscribe(self.on_event)
         session.approver = self
 
@@ -115,12 +169,37 @@ class Tab:
         if isinstance(event, ev.UsageUpdated):
             payload.update(self.usage())
         self.broadcast(payload)
+        self.remember(event, payload)
+        if isinstance(event, ev.ToolStarted) and event.name in ("Write", "Edit", "MultiEdit"):
+            self._writing[event.tool_use_id] = str(event.input.get("file_path") or "")
+        elif isinstance(event, ev.ToolFinished) and event.tool_use_id in self._writing:
+            path = self._writing.pop(event.tool_use_id)
+            if path and not event.is_error:
+                self.written.add(self.session.tool_ctx.resolve(path).resolve())
         if isinstance(event, ev.TurnStarted | ev.TurnEnded):
             self.ended = isinstance(event, ev.TurnEnded)
             self.panel.broadcast(self.panel.tabs_payload())
 
     def broadcast(self, payload: dict[str, Any]) -> None:
         self.panel.broadcast({**payload, "tab": self.id})
+
+    def remember(self, event: ev.Event, payload: dict[str, Any]) -> None:
+        if isinstance(event, ev.TurnStarted):
+            self.turn_base = len(self.session.messages)
+            self.live = [payload]
+        elif isinstance(event, ev.TurnEnded):
+            self.live = []
+        elif self.live and isinstance(event, LIVE_EVENTS):
+            last = self.live[-1]
+            if (
+                isinstance(event, ev.TextDelta | ev.ReasoningDelta)
+                and last["type"] == payload["type"]
+            ):
+                last["text"] += payload["text"]  # one entry per streamed block, not per chunk
+            elif len(self.live) < MAX_LIVE_EVENTS:
+                self.live.append(payload)
+        if isinstance(event, ev.Compacted):
+            self.turn_base = min(self.turn_base, len(self.session.messages))
 
     def usage(self) -> dict[str, Any]:
         meter = self.session.meter
@@ -154,9 +233,15 @@ class Tab:
             "plan": session.plan,
             "touched": list(session.touched),
             "usage": self.usage(),
+            # While a turn runs, its own messages come as ``live`` events instead.
             "history": [
-                {"role": m.role, "blocks": m.blocks()} for m in session.messages if not m.is_meta
+                {"role": m.role, "blocks": m.blocks()}
+                for m in (session.messages[: self.turn_base] if self.live else session.messages)
+                if not m.is_meta
             ],
+            "live": list(self.live),
+            "worktree": self.worktree,
+            "mods": self.mods_payload(""),
             "approvals": [request for request, _ in self.pending.values()],
             "mcp": mcp_servers(session.mcp or self.panel.mcp),
         }
@@ -206,7 +291,9 @@ class Tab:
             if text:
                 self.start_turn(text, reply)
         elif kind == "cancel":
-            self.session.cancel()
+            # A turn still queued for the local model has no session turn yet: drop the task.
+            if not self.session.cancel() and self.turn is not None and not self.turn.done():
+                self.turn.cancel()
         elif kind == "approval":
             entry = self.pending.get(str(message.get("id")))
             answer = str(message.get("answer"))
@@ -214,6 +301,18 @@ class Tab:
                 entry[1].set_result(answer)
         elif kind == "state":
             reply.put_nowait(self.state())
+        elif kind == "mods":
+            reply.put_nowait(
+                {
+                    "type": "Mods",
+                    "tab": self.id,
+                    "mods": self.mods_payload(str(message.get("prompt") or "")),
+                }
+            )
+        elif kind == "mod":
+            await self.run_mod(
+                str(message.get("key") or ""), str(message.get("prompt") or ""), reply
+            )
         elif kind in ("tree", "open"):
             relative = str(message.get("path") or "")
             try:
@@ -240,6 +339,129 @@ class Tab:
                     }
                 )
 
+    # ----------------------------------------------------------------- mods
+
+    def mod_values(self, prompt: str) -> dict[str, str]:
+        return tab_values(self.panel.mods(), self.session.cwd, self.label, self.written, prompt)
+
+    def mods_payload(self, prompt: str) -> list[dict[str, Any]]:
+        try:
+            mods = self.panel.mods()
+        except ModError as exc:
+            return [
+                {
+                    "key": "",
+                    "label": "mods.toml",
+                    "kind": "error",
+                    "note": str(exc),
+                    "why": str(exc),
+                }
+            ]
+        values = self.mod_values(prompt)
+        return [
+            {
+                "key": m.key,
+                "label": m.label,
+                "kind": m.kind,
+                "note": m.note,
+                "ask": m.ask,
+                "confirm": m.confirm,
+                "why": why_not(m, {**values, "prompt": "?"}),  # the prompt comes with the key press
+            }
+            for m in mods.mods
+        ]
+
+    async def run_mod(self, key: str, prompt: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
+        def refuse(text: str) -> None:
+            reply.put_nowait({"type": "Notice", "tab": self.id, "level": "warn", "text": text})
+
+        try:
+            mod = self.panel.mods().get(key)
+        except ModError as exc:
+            refuse(str(exc))
+            return
+        if mod is None:
+            refuse(f"no mod on {key}; Edit mods shows mods.toml")
+            return
+        values = self.mod_values(prompt)
+        problem = why_not(mod, values)
+        if problem:
+            refuse(f"{mod.key} {mod.label}: {problem}")
+            return
+        if mod.kind == "prompt":
+            self.start_turn(fill(mod.text, values, shell=False), reply)
+            return
+        if mod.kind == "command":
+            text = mod.builtin or f"/{mod.file} {fill(mod.args, values, shell=False)}".strip()
+            await self.handle({"type": "prompt", "text": text}, reply)
+            return
+        if self.busy:
+            refuse("a turn is running; the mod waits for it to end")
+            return
+        self.ended = False
+        self.turn = asyncio.create_task(self._mod_turn(mod, values))
+
+    async def _mod_turn(self, mod: Mod, values: dict[str, str]) -> None:
+        """A mod runs as a turn of its own: the page shows it live and keeps a result card."""
+        session = self.session
+        head = f"[{mod.key} {mod.label}]"
+        lock = self.panel.mod_locks.setdefault(mod.lock, asyncio.Lock()) if mod.lock else None
+        session.bus.emit(ev.TurnStarted(head))
+        if lock is not None and lock.locked():
+            text = f"SKIPPED: another tab holds the {mod.lock} lock; nothing was {mod.lock}ed here."
+            session.bus.emit(ev.TextDelta(text))
+            session.bus.emit(ev.TurnEnded("done", text))
+            return
+        try:
+            async with lock or contextlib.nullcontext():
+                if mod.kind == "shell":
+                    command = fill(mod.run, values, shell=True)
+                    result = await session.run_tool_call("Bash", {"command": command}, mod.confirm)
+                    text = f"{head} {'failed' if result.is_error else 'done'}: {first_line(result.content)}"
+                    session.bus.emit(ev.TextDelta(text))
+                    session.bus.emit(ev.TurnEnded("error" if result.is_error else "done", text))
+                else:
+                    subject = await self._mod_subject(mod)
+                    if not subject:
+                        text = f"{head}: nothing to check ({mod.on} is empty)"
+                        session.bus.emit(ev.TextDelta(text))
+                        session.bus.emit(ev.TurnEnded("done", text))
+                        return
+                    brief = fill(mod.instruction, values, shell=False) or "Review this."
+                    result = await session.run_agent(
+                        mod.agent, f"{brief}\n\n<input>\n{subject}\n</input>"
+                    )
+                    session.bus.emit(ev.TextDelta(result.content))
+                    session.bus.emit(
+                        ev.TurnEnded("error" if result.is_error else "done", result.content)
+                    )
+        except KeyError:
+            text = f"{head}: no agent named {mod.agent}"
+            session.bus.emit(ev.Notice("error", text))
+            session.bus.emit(ev.TurnEnded("error", text))
+        except asyncio.CancelledError:
+            session.bus.emit(ev.TurnEnded("cancelled", f"{head} stopped"))
+
+    async def _mod_subject(self, mod: Mod) -> str:
+        if mod.on == "uncommitted_diff":
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(self.session.cwd),
+                "diff",
+                "HEAD",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            out, _ = await process.communicate()
+            return out.decode(errors="replace")[:60_000]
+        for message in reversed(self.session.messages):
+            if message.role == "assistant" and not message.is_meta:
+                text = "\n".join(b["text"] for b in message.blocks() if b["type"] == "text").strip()
+                if text:
+                    return text[:60_000]
+        return ""
+
     def start_turn(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
         if self.busy:
             reply.put_nowait(
@@ -251,7 +473,31 @@ class Tab:
                 }
             )
             return
-        self.turn = asyncio.create_task(self.session.send(text))
+        self.ended = False
+        self.turn = asyncio.create_task(self.run_turn(text))
+
+    async def run_turn(self, text: str) -> None:
+        """Run one turn; tabs on the same local model take turns, since it answers one at a time."""
+        lock = self.panel.model_lock(self.session.model)
+        if lock is None:
+            await self.session.send(text)
+            return
+        if lock.locked():
+            holder = self.panel.lock_holders.get(self.session.model.id)
+            self.broadcast(
+                {
+                    "type": "Notice",
+                    "level": "info",
+                    "text": f"waiting for the local model {self.session.model.id}: "
+                    f"tab {holder.label if holder else '?'} is using it",
+                }
+            )
+        async with lock:
+            self.panel.lock_holders[self.session.model.id] = self
+            try:
+                await self.session.send(text)
+            finally:
+                self.panel.lock_holders.pop(self.session.model.id, None)
 
     async def command(self, text: str, reply: asyncio.Queue[dict[str, Any]]) -> str:
         """Run a slash command. Returns the prompt it stands for, or an empty string."""
@@ -317,9 +563,20 @@ class Panel:
         self.max_tabs = max_tabs
         self.mcp = session.mcp
         self.market = MarketFeed(session.settings.chart_env_file)
-        self.factory = factory or (lambda cwd, model: _sibling_session(session, cwd, model))
+        settings = session.settings
+        self.voice = Transcriber(
+            settings.voice_model, settings.voice_device, settings.voice_language
+        )
+        self.voice_warming: asyncio.Task[None] | None = None
+        self.factory = factory or session.sibling
         self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
         self.tabs: dict[str, Tab] = {}
+        self.closed: list[dict[str, Any]] = []  # newest last: what Ctrl+Shift+T reopens
+        self.worktree_root = Path(session.settings.worktree_dir).expanduser()
+        self.model_locks: dict[str, asyncio.Lock] = {}
+        self.mod_locks: dict[str, asyncio.Lock] = {}
+        self._mods: tuple[float, ModSet] | None = None
+        self.lock_holders: dict[str, Tab] = {}
         self._numbers = itertools.count(1)
         self.add_tab(session)
 
@@ -337,6 +594,21 @@ class Panel:
         self.tabs[tab.id] = tab
         return tab
 
+    def mods(self) -> ModSet:
+        """mods.toml, read again whenever the file changes on disk."""
+        path = config_dir() / "mods.toml"
+        stamp = path.stat().st_mtime if path.is_file() else 0.0
+        if self._mods is None or self._mods[0] != stamp:
+            self._mods = (stamp, load_mods(path))
+        return self._mods[1]
+
+    def model_lock(self, model: ModelSpec) -> asyncio.Lock | None:
+        """One lock per model served from this machine; hosted models need none."""
+        host = urlsplit(model.base_url).hostname or ""
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            return None
+        return self.model_locks.setdefault(model.id, asyncio.Lock())
+
     def tabs_payload(self) -> dict[str, Any]:
         return {
             "type": "Tabs",
@@ -348,9 +620,12 @@ class Panel:
                     "model": tab.session.model.id,
                     "busy": tab.busy,
                     "waiting": bool(tab.pending),
+                    "cwd": str(tab.session.cwd),
+                    "worktree": tab.worktree,
                 }
                 for tab in self.tabs.values()
             ],
+            "closed": [t["label"] for t in self.closed],
         }
 
     def broadcast(self, payload: dict[str, Any]) -> None:
@@ -372,8 +647,29 @@ class Panel:
             if tab and label:
                 tab.label = label
                 self.broadcast(self.tabs_payload())
+        elif kind == "prompt" and str(message.get("text") or "").split()[:1] == ["/tab"]:
+            await self.tab_command(message, reply)
+        elif kind == "mods_file":
+            try:
+                path = self.mods().path
+                body = path.read_text(encoding="utf-8") if path else ""
+            except ModError as exc:
+                path, body = config_dir() / "mods.toml", str(exc)
+            reply.put_nowait(
+                {
+                    "type": "CommandOutput",
+                    "command": f"mods: {path}",
+                    "text": f"edit {config_dir() / 'mods.toml'} (read again on change)\n\n{body}",
+                }
+            )
+        elif kind == "tab_reopen":
+            await self.reopen_tab(reply)
         elif kind == "tabs":
             reply.put_nowait(self.tabs_payload())
+        elif kind == "voice_warm":
+            self.voice_warming = asyncio.create_task(self.voice.warm())
+        elif kind == "transcribe":
+            reply.put_nowait(await self.transcribe(message))
         elif kind == "bars":
             minutes = message.get("minutes")
             reply.put_nowait(
@@ -398,10 +694,25 @@ class Panel:
         if not cwd.is_dir():
             refuse(f"no such folder: {cwd}")
             return
-        session = self.factory(cwd.resolve(), model)
-        await session.start()
-        tab = self.add_tab(session)
-        if any(t.session.cwd == tab.session.cwd for t in self.tabs.values() if t is not tab):
+        cwd, worktree = cwd.resolve(), ""
+        if message.get("isolated"):
+            try:
+                cwd, worktree = await make_worktree(cwd, self.worktree_root, next(self._numbers))
+            except WorktreeError as exc:
+                refuse(f"no isolated tab: {exc}")
+                return
+        tab = await self.open_session(cwd, model, str(message.get("label") or ""))
+        tab.worktree = worktree
+        if worktree:
+            tab.broadcast(
+                {
+                    "type": "Notice",
+                    "level": "info",
+                    "text": f"isolated tab: git worktree {cwd} on branch {worktree}; "
+                    "it stays on disk after the tab closes (merge or remove it yourself)",
+                }
+            )
+        elif any(t.session.cwd == tab.session.cwd for t in self.tabs.values() if t is not tab):
             tab.broadcast(
                 {
                     "type": "Notice",
@@ -409,6 +720,66 @@ class Panel:
                     "text": "another tab works in this folder; edits can collide",
                 }
             )
+        self.broadcast(tab.state())
+        self.broadcast({**self.tabs_payload(), "active": tab.id})
+
+    async def open_session(
+        self, cwd: Path, model: ModelSpec, label: str = "", resume_from: Path | None = None
+    ) -> Tab:
+        if resume_from is None:
+            session = self.factory(cwd, model)
+        else:
+            session = self.factory(cwd, model, resume_from=resume_from)  # type: ignore[call-arg]
+        await session.start()
+        return self.add_tab(session, label)
+
+    async def tab_command(
+        self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]
+    ) -> None:
+        """``/tab``, ``/tab new [DIR]``, ``/tab N``, ``/tab close``, ``/tab reopen`` typed or spoken."""
+        text = str(message.get("text") or "")
+        words = text.split()
+        here = self.tabs.get(str(message.get("tab"))) or self.first
+        action = words[1] if len(words) > 1 else "list"
+        if action == "new":
+            folder = " ".join(words[2:])
+            await self.new_tab({"cwd": folder, "model": here.session.model.id}, reply)
+        elif action == "close":
+            await self.close_tab(here.id, reply)
+        elif action == "reopen":
+            await self.reopen_tab(reply)
+        elif action.isdigit() and 1 <= int(action) <= len(self.tabs):
+            reply.put_nowait({**self.tabs_payload(), "active": list(self.tabs)[int(action) - 1]})
+        else:
+            rows = [
+                f"{'*' if t is here else ' '} {n}  {t.label}  {t.session.cwd}  {t.session.model.id}"
+                for n, t in enumerate(self.tabs.values(), 1)
+            ]
+            reply.put_nowait(
+                {"type": "CommandOutput", "tab": here.id, "command": text, "text": "\n".join(rows)}
+            )
+
+    async def reopen_tab(self, reply: asyncio.Queue[dict[str, Any]]) -> None:
+        """Ctrl+Shift+T: the newest closed tab comes back with its transcript."""
+        if not self.closed:
+            reply.put_nowait({"type": "Notice", "level": "info", "text": "no closed tab to reopen"})
+            return
+        if len(self.tabs) >= self.max_tabs:
+            reply.put_nowait(
+                {
+                    "type": "Notice",
+                    "level": "warn",
+                    "text": f"{self.max_tabs} tabs are open already",
+                }
+            )
+            return
+        entry = self.closed.pop()
+        model = self.models.get(entry["model"], self.first.session.model)
+        transcript = Path(entry["transcript"])
+        tab = await self.open_session(
+            Path(entry["cwd"]), model, entry["label"], transcript if transcript.is_file() else None
+        )
+        tab.worktree = entry["worktree"]
         self.broadcast(tab.state())
         self.broadcast({**self.tabs_payload(), "active": tab.id})
 
@@ -423,6 +794,16 @@ class Panel:
         await tab.shutdown()
         tab.session.mcp = None  # shared with the other tabs; the panel stops it at the end
         await tab.session.close()
+        self.closed.append(
+            {
+                "label": tab.label,
+                "cwd": str(tab.session.cwd),
+                "model": tab.session.model.id,
+                "transcript": str(tab.session.transcript.path),
+                "worktree": tab.worktree,
+            }
+        )
+        del self.closed[:-CLOSED_TABS_KEPT]
         self.broadcast({"type": "TabClosed", "tab": tab_id})
         self.broadcast(self.tabs_payload())
 
@@ -439,24 +820,17 @@ class Panel:
         if close_sessions and self.mcp is not None:
             await self.mcp.close()
         await self.market.close()
+        await self.voice.close()
 
-
-def _sibling_session(template: Session, cwd: Path, model: ModelSpec) -> Session:
-    """A new session that runs like ``template``: same provider, settings, hooks and MCP pool."""
-    same_folder = cwd == template.cwd
-    return Session(
-        cwd=cwd,
-        model=model,
-        provider=template.provider,
-        settings=template.settings,
-        hook_settings=template._hook_settings_arg,
-        sessions_dir=template._sessions_dir,
-        mcp=template.mcp,
-        skills=template.skills if same_folder else None,
-        commands=template.commands if same_folder else None,
-        agents=template.agents if same_folder else None,
-        models=template.models,
-    )
+    async def transcribe(self, message: dict[str, Any]) -> dict[str, Any]:
+        audio = str(message.get("audio") or "")
+        if not audio or len(audio) > MAX_AUDIO_B64:
+            return {"type": "Transcript", "text": "", "error": "no audio, or a clip over 8 MB"}
+        try:
+            blob = base64.b64decode(audio, validate=True)
+        except binascii.Error:
+            return {"type": "Transcript", "text": "", "error": "the clip was not valid base64"}
+        return {"type": "Transcript", **dataclasses.asdict(await self.voice.transcribe(blob))}
 
 
 def create_app(

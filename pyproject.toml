@@ -20,13 +20,15 @@ mwm-eval = "mwm_harness.reason_eval:main"
 
 [project.optional-dependencies]
 web = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
+# Panel mic button: local Whisper; the nvidia wheels let it run on a CUDA GPU (about 2 GB)
+voice = ["faster-whisper>=1.1", "av<16", "nvidia-cublas-cu12", "nvidia-cudnn-cu12==9.*"]
 dev = ["pytest>=8.0", "ruff>=0.15", "fastapi>=0.110", "uvicorn>=0.29", "websockets>=12"]
 
 [tool.setuptools.packages.find]
 include = ["mwm_harness*"]
 
 [tool.setuptools.package-data]
-mwm_harness = ["web/static/*", "playbooks/*/SKILL.md", "builtin_agents/*.md"]
+mwm_harness = ["web/static/*", "playbooks/*/SKILL.md", "builtin_agents/*.md", "mods.default.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

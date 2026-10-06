@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -336,6 +337,35 @@ class Session:
 
     # -------------------------------------------------------------- subagents
 
+    def sibling(self, cwd: Path, model: ModelSpec, resume_from: Path | None = None) -> Session:
+        """A new session that runs like this one: same provider, settings, hooks and MCP pool."""
+        same_folder = cwd.resolve() == self.cwd
+        return Session(
+            cwd=cwd,
+            model=model,
+            provider=self.provider,
+            settings=self.settings,
+            hook_settings=self._hook_settings_arg,
+            resume_from=resume_from,
+            sessions_dir=self._sessions_dir,
+            mcp=self.mcp,
+            skills=self.skills if same_folder else None,
+            commands=self.commands if same_folder else None,
+            agents=self.agents if same_folder else None,
+            models=self.models,
+        )
+
+    async def run_tool_call(
+        self, name: str, tool_input: dict[str, Any], force_ask: bool = False
+    ) -> ToolResult:
+        """Run one tool call that no model asked for (a mod), with the usual checks and events."""
+        call_id = f"mod_{uuid.uuid4().hex[:10]}"
+        self.bus.emit(ev.ToolStarted(call_id, name, tool_input))
+        call: Block = {"type": "tool_use", "id": call_id, "name": name, "input": tool_input}
+        result = await self._run_one_tool(call, None, force_ask)
+        self.bus.emit(ev.ToolFinished(call_id, name, result.content, result.is_error))
+        return result
+
     async def run_agent(self, name: str, prompt: str) -> ToolResult:
         """Run one subagent to its final answer. Cancelling the parent turn cancels it too."""
         agent = self.agents[name]
@@ -642,7 +672,9 @@ class Session:
                 self._blind_fixes += 1
             self._edited_since_run = False
 
-    async def _run_one_tool(self, call: Block, argument_error: str | None) -> ToolResult:
+    async def _run_one_tool(
+        self, call: Block, argument_error: str | None, force_ask: bool = False
+    ) -> ToolResult:
         name, tool_input = call["name"], dict(call["input"])
         if argument_error:
             return ToolResult(f"The call was not run: {argument_error}", True)
@@ -676,6 +708,8 @@ class Session:
             decision.verdict = "allow"
         if decision.verdict == "allow" and pre.permission == "ask":
             decision.verdict, decision.reason = "ask", pre.permission_reason or "a hook asked"
+        if decision.verdict == "allow" and force_ask:
+            decision.verdict, decision.reason = "ask", "this action always asks first"
         if decision.verdict == "ask":
             doomed = tool.refusal(tool_input, self.tool_ctx)
             if doomed:  # seen live: 15 approval prompts for an Edit that could not apply

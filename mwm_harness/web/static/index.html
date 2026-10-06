@@ -40,8 +40,19 @@ button,select,textarea{font:inherit;color:inherit}
 /* ---------- app frame ---------- */
 .app{height:calc(100vh - 20px);min-height:600px;display:grid;gap:8px;
   grid-template-columns:250px minmax(0,1fr) 400px;
-  grid-template-rows:auto auto minmax(0,1fr);
-  grid-template-areas:"tabs tabs tabs" "top top top" "rail centre right"}
+  grid-template-rows:auto auto auto minmax(0,1fr);
+  grid-template-areas:"tabs tabs tabs" "top top top" "mods mods mods" "rail centre right"}
+.mods{grid-area:mods;display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px}
+.mods>b{font:600 11px var(--mono);letter-spacing:.08em;color:var(--muted);margin-right:4px}
+.mods button{display:flex;align-items:center;gap:7px;min-height:30px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:#070b14;color:var(--text);font:500 12.5px var(--display);cursor:pointer}
+.mods button i{font:500 10.5px var(--mono);font-style:normal;color:var(--muted)}
+.mods button:hover{border-color:var(--line-hi)}
+.mods button.on{border-color:var(--gold);background:rgba(255,179,71,.1)}
+.mods button.off{opacity:.45;cursor:not-allowed}
+.mods button.k-shell i{color:var(--gold)} .mods button.k-agent i{color:var(--ok)} .mods button.k-command i{color:var(--cyan)}
+.mods .edit{border-style:dashed;color:var(--muted)}
+.mods .modnote{flex:1 1 100%;font:11px var(--mono);color:var(--gold);padding:2px 2px 0}
+.mods .modnote:empty{display:none}
 .pane{background:var(--pane);border:1px solid var(--line);border-radius:10px;min-height:0;min-width:0}
 
 /* ---------- session tabs ---------- */
@@ -54,6 +65,19 @@ button,select,textarea{font:inherit;color:inherit}
 .stab .x{color:var(--muted);padding:0 3px;border-radius:3px}
 .stab .x:hover{color:var(--text);background:#1a2438}
 .newtab{min-height:34px;width:34px;border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
+.renamebox{min-height:34px;width:16ch;padding:0 12px;border:1px solid var(--cyan);border-bottom:none;border-radius:8px 8px 0 0;background:var(--pane);color:var(--text);font:13px var(--display);outline:none}
+.stab .tree{font:10px var(--mono);color:var(--violet)}
+.reopen{min-height:34px;padding:0 10px;border:1px dashed var(--line-hi);border-bottom:none;border-radius:8px 8px 0 0;background:transparent;color:var(--muted);font:11px var(--mono);cursor:pointer}
+dialog.newtab{background:var(--pane-hi);color:var(--text);border:1px solid var(--line-hi);border-radius:10px;padding:16px 18px;width:min(460px,92vw)}
+dialog.newtab::backdrop{background:rgba(2,4,8,.6)}
+dialog.newtab h3{margin:0 0 10px;font:700 15px var(--display)}
+dialog.newtab label{display:grid;gap:4px;margin-bottom:10px;font:11px var(--mono);color:var(--muted)}
+dialog.newtab input[type=text],dialog.newtab select{background:#070b14;border:1px solid var(--line-hi);border-radius:6px;padding:6px 8px;color:var(--text);font:12px var(--mono)}
+dialog.newtab .check{display:flex;gap:8px;align-items:flex-start;color:var(--text);font:12px var(--display)}
+dialog.newtab .check small{display:block;color:var(--muted);font:11px var(--mono)}
+dialog.newtab .row{display:flex;gap:8px;justify-content:flex-end;margin-top:6px}
+dialog.newtab button{cursor:pointer;border:1px solid var(--line-hi);background:transparent;border-radius:6px;padding:4px 12px;font:500 12px var(--display)}
+dialog.newtab button.go{background:var(--cyan);border-color:var(--cyan);color:#05070d}
 .tabkeys{margin-left:auto;align-self:center;font:11px var(--mono);color:var(--muted);padding:0 6px;white-space:nowrap}
 
 /* ---------- top strip ---------- */
@@ -232,6 +256,16 @@ canvas#gl:active{cursor:grabbing}
 .field textarea{all:unset;flex:1;min-width:0;font:12.5px/1.5 var(--mono);color:var(--text);resize:none;max-height:180px;overflow:auto;white-space:pre-wrap}
 .field textarea::placeholder{color:var(--faint)}
 .field kbd{font:10px var(--mono);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-top:2px}
+.field .mic{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px;font:600 10.5px var(--mono);margin-top:1px}
+.field .mic:hover{color:var(--text);border-color:var(--line-hi)}
+.field .mic svg{width:12px;height:12px}
+.field .mic.rec{color:#1b1204;background:var(--alert);border-color:var(--alert);animation:pulse 1s ease-in-out infinite}
+.field .mic.busy{color:var(--cyan);border-color:var(--cyan)}
+.voicebar{display:flex;gap:10px;align-items:center;font:10px var(--mono);color:var(--faint)}
+.voicebar label{display:inline-flex;gap:4px;align-items:center;cursor:pointer;color:var(--muted)}
+.voicebar input{accent-color:var(--gold);margin:0}
+.voicebar .heard{margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voicebar .heard.bad{color:var(--alert)}
 .field .stop{all:unset;cursor:pointer;font:600 10.5px var(--mono);color:var(--alert);border:1px solid rgba(255,107,91,.5);border-radius:4px;padding:0 6px}
 .menu{position:absolute;left:10px;right:10px;bottom:calc(100% - 4px);max-height:220px;overflow:auto;background:var(--pane-hi);border:1px solid var(--line-hi);border-radius:8px;padding:4px;box-shadow:0 -18px 40px rgba(0,0,0,.5);font:11.5px var(--mono)}
 .menu div{display:grid;grid-template-columns:96px 1fr;gap:8px;padding:3px 7px;border-radius:4px;color:var(--muted);cursor:pointer}
@@ -239,11 +273,11 @@ canvas#gl:active{cursor:grabbing}
 .menu div.sel{background:rgba(94,225,255,.1)}
 
 @media (max-width:1180px){
-  .app{height:auto;grid-template-columns:minmax(0,1fr) 360px;grid-template-rows:auto auto 640px 460px;grid-template-areas:"tabs tabs" "top top" "centre right" "rail rail"}
+  .app{height:auto;grid-template-columns:minmax(0,1fr) 360px;grid-template-rows:auto auto auto 640px 460px;grid-template-areas:"tabs tabs" "top top" "mods mods" "centre right" "rail rail"}
 }
 @media (max-width:820px){
   body{padding:8px}
-  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 600px 520px auto;grid-template-areas:"tabs" "top" "right" "centre" "rail"}
+  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto 600px 520px auto;grid-template-areas:"tabs" "top" "mods" "right" "centre" "rail"}
   .tabkeys{display:none}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -271,6 +305,8 @@ canvas#gl:active{cursor:grabbing}
     <span class="chip" title="Topstep flattens every position at 16:10 ET">flatten in <b id="flat">--</b></span>
     <span id="conn">connecting</span>
   </header>
+
+  <div class="pane mods" id="mods" role="toolbar" aria-label="Mods: F1 to F9"><b>MODS</b><span class="modnote" id="modnote"></span></div>
 
   <nav class="pane rail" aria-label="Session lists">
     <details open><summary>Agents <em id="agentsum"></em></summary><ul id="agents"></ul></details>
@@ -330,11 +366,21 @@ canvas#gl:active{cursor:grabbing}
       <form class="composer" id="form">
         <div class="menu" id="menu" hidden></div>
         <div class="slash" id="slashbar"></div>
-        <div class="field"><textarea id="input" rows="1" autocomplete="off" placeholder="Ask, or / for commands. Enter sends, Shift+Enter breaks the line." autofocus></textarea><button type="button" class="stop" id="stop" hidden title="Stop the turn (Esc)">stop</button><kbd>esc</kbd></div>
+        <div class="field"><textarea id="input" rows="1" autocomplete="off" placeholder="Ask, or / for commands. Enter sends, Shift+Enter breaks the line." autofocus></textarea><button type="button" class="mic" id="mic" title="Speak (Alt+M): click to start, click again to stop" aria-label="Speak"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span id="miclabel">mic</span></button><button type="button" class="stop" id="stop" hidden title="Stop the turn (Esc)">stop</button><kbd>esc</kbd></div>
+        <div class="voicebar"><label title="Send the transcript as soon as it arrives"><input type="checkbox" id="autosend">send what I say</label><label title="Read each finished answer aloud with the browser's voice"><input type="checkbox" id="speak">read answers aloud</label><span class="heard" id="heard"></span></div>
       </form>
     </section>
   </aside>
 </div>
+<dialog class="newtab" id="newtabdlg" aria-label="New tab">
+  <form method="dialog" id="newtabform">
+    <h3>New session tab</h3>
+    <label>Folder<input type="text" id="ntcwd" autocomplete="off" spellcheck="false"></label>
+    <label>Model<select id="ntmodel"></select></label>
+    <label class="check"><input type="checkbox" id="ntiso"><span>Isolated<small>a git worktree on its own branch, so edits cannot collide with other tabs</small></span></label>
+    <div class="row"><button type="button" id="ntcancel">Cancel</button><button type="submit" class="go">Open tab</button></div>
+  </form>
+</dialog>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -344,7 +390,8 @@ const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 let ws = null, retry = 500, busy = false;
 let session = "";              // id of the tab (session) on screen
-let tabList = [];              // [{id, label, model, busy, waiting}] from the server
+let tabList = [];              // [{id, label, model, busy, waiting, cwd, worktree}] from the server
+let closedTabs = [];           // labels of closed tabs, newest last
 let state = null;              // last State of the tab on screen
 let current = null;            // the assistant message being streamed
 let reasoning = null;          // the reasoning block being streamed
@@ -734,7 +781,11 @@ function showApproval() {
   if (diff) p.append(` ${diff.path}${diff.is_new ? " (new file)" : ""}`);
   if (request.reason) p.append(" ", el("span", "why", request.reason));
   card.append(p);
-  if (diff) { card.append(el("span", "cmd", "The change is open in the code pane.")); showChange("approval:" + request.id, diff.path, unifiedRows(diff.unified), false); }
+  if (diff) {
+    // The approval diff replaces the live view of the same call, so one change shows as one tab.
+    for (const [key, f] of [...openFiles]) if (key.startsWith("live:") && f.path && diff.path.endsWith(f.path.replace(/^\.\//, ""))) openFiles.delete(key);
+    card.append(el("span", "cmd", "The change is open in the code pane.")); showChange("approval:" + request.id, diff.path, unifiedRows(diff.unified), false);
+  }
   else card.append(el("span", "cmd", isPlan ? input.plan : request.tool === "Bash" ? input.command : JSON.stringify(input, null, 2)));
   const opts = el("div", "opts");
   const btn = (label, key, value, cls) => { const b = el("button", cls || "", label); b.type = "button"; b.append(el("kbd", null, key)); b.onclick = () => answer(value); opts.append(b); };
@@ -759,17 +810,20 @@ function loadState(s) {
   const sb = $("sandbox"); sb.className = "chip " + (s.sandbox ? "ok" : "bad"); sb.replaceChildren("shell sandbox ", el("b", null, s.sandbox ? "on" : "OFF"));
   $("sessinfo").textContent = `${s.cwd}\nsession ${s.session_id}\nshell sandbox ${s.sandbox ? "on" : "OFF"}`;
   $("sid").textContent = s.session_id.slice(0, 8); $("cwdname").textContent = baseName(s.cwd);
-  turnCount = s.history.filter((m) => m.role === "user" && m.blocks.some((b) => b.type === "text")).length - (s.busy ? 1 : 0);
-  bumpTurns(s.busy ? 1 : 0);
+  turnCount = s.history.filter((m) => m.role === "user" && m.blocks.some((b) => b.type === "text")).length;
+  bumpTurns(0);  // a replayed TurnStarted below counts the running turn
   s.history.forEach((m) => m.blocks.forEach((b) => {
     if (b.type === "text" && m.role === "user") userMessage(b.text);
     else if (b.type === "text") { current = null; assistantText(b.text); current = null; }
     else if (b.type === "tool_use") toolStarted(b.id, b.name, b.input, false);
     else if (b.type === "tool_result") toolFinished(b.tool_use_id, b.content, !!b.is_error, false);
   }));
-  if (!s.history.length) add(el("div", "sys", "Ready. Ask, or / for commands."));
+  // A turn that was already running when this tab came on screen: replay what it has done so far.
+  (s.live || []).forEach((e) => { const h = handlers[e.type]; if (h && e.type !== "State") h(e); });
+  if (!s.history.length && !(s.live || []).length) add(el("div", "sys", "Ready. Ask, or / for commands."));
   setTouched(s.touched); $("treeroot").replaceChildren(); send({ type: "tree", path: "" });
   setTodos(s.todos); setPlan(s.plan); setMcp(s.mcp); setBusy(s.busy); setUsage(s.usage);
+  drawMods(s.mods || []);
   drawOutputs(); const n = $("vresult").querySelector(".n"); if (n) n.remove();
   if ((outputs.get(session) || []).length) $("vresult").appendChild(el("span", "n", String(outputs.get(session).length)));
   approvals.length = 0; s.approvals.forEach((a) => approvals.push(a)); showApproval();
@@ -795,7 +849,7 @@ const handlers = {
   UsageUpdated: setUsage,
   TodosUpdated: (e) => setTodos(e.todos),
   PlanProposed: (e) => setPlan(e.plan),
-  FilesTouched: (e) => setTouched(e.paths),
+  FilesTouched: (e) => { setTouched(e.paths); refreshMods(); },
   SubagentStarted: (e) => { agents.set(e.agent, { state: "working", note: e.model }); note("info", `agent ${e.agent} started on ${e.model}`); drawAgents(); },
   SubagentFinished: (e) => { agents.set(e.agent, { state: "done", note: `${e.reason} · ${e.tool_calls} calls` }); note("info", `agent ${e.agent} ${e.reason}, ${e.tool_calls} tool calls`); drawAgents(); },
   Compacted: (e) => note("info", `history compacted (${e.trigger}): ${e.messages_before} messages became one summary`),
@@ -804,12 +858,14 @@ const handlers = {
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; if (state) state.mode = e.mode; if (scene) scene.setCore(); },
   ModelChanged: (e) => { $("model").value = e.model; if (state) state.model = e.model; if (scene) scene.setCore(); },
-  TurnEnded: (e) => { setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); },
+  TurnEnded: (e) => { setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); if (e.reason === "done") speakAnswer(e.text); },
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
   ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
   CommandOutput: (e) => { current = null; add(el("pre", "cmdout", `${e.command}\n${e.text}`)); },
   Bars: barsLoaded,
-  Tabs: (e) => { tabList = e.tabs; renderSessions(); if (e.active) switchTo(e.active); },
+  Transcript: transcriptLoaded,
+  Mods: (e) => drawMods(e.mods),
+  Tabs: (e) => { tabList = e.tabs; closedTabs = e.closed || []; renderSessions(); if (e.active) switchTo(e.active); },
   TabClosed: (e) => { outputs.delete(e.tab); if (e.tab === session) switchTo((tabList.find((t) => t.id !== e.tab) || {}).id || ""); },
 };
 
@@ -817,11 +873,14 @@ const handlers = {
 function renderSessions() {
   const bar = $("stabs"); bar.replaceChildren();
   tabList.forEach((t, i) => {
-    const b = el("button", "stab"); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(t.id === session));
+    const b = el("button", "stab"); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(t.id === session)); b.dataset.id = t.id;
     b.title = `${t.label} · ${t.model}` + (i < 9 ? ` · Ctrl+${i + 1}` : "");
     const color = t.waiting ? "var(--gold)" : t.busy ? "var(--cyan)" : "var(--faint)";
     const dot = el("span", "dot"); dot.style.background = color;
-    b.append(dot, el("span", null, t.label), el("span", "fold", t.model));
+    const name = el("span", "label", t.label); name.title = "Double-click to rename";
+    b.addEventListener("dblclick", () => renameTab(t, b));
+    b.append(dot, name, el("span", "fold", t.model));
+    if (t.worktree) { const w = el("span", "tree", "⑂ " + t.worktree.split("/").pop()); w.title = `isolated: git worktree on branch ${t.worktree}`; b.append(w); }
     if (t.waiting || t.busy) { const badge = el("span", "badge", t.waiting ? "needs you" : "working"); badge.style.background = color; b.append(badge); }
     if (tabList.length > 1) {
       const x = el("span", "x", "×"); x.title = "Close tab (Ctrl+W)";
@@ -830,13 +889,42 @@ function renderSessions() {
     b.onclick = () => switchTo(t.id); bar.append(b);
   });
   const plus = el("button", "newtab", "+"); plus.type = "button"; plus.title = "New tab (Ctrl+T)"; plus.setAttribute("aria-label", "New tab");
-  plus.onclick = newTab; bar.append(plus, el("span", "tabkeys", "Ctrl+T new · Ctrl+1..9 switch · Ctrl+W close"));
+  plus.onclick = newTab; bar.append(plus);
+  if (closedTabs.length) {
+    const re = el("button", "reopen", "↺ " + closedTabs[closedTabs.length - 1]); re.type = "button";
+    re.title = "Reopen the last closed tab (Ctrl+Shift+T)"; re.onclick = reopenTab; bar.append(re);
+  }
+  bar.append(el("span", "tabkeys", "Ctrl+T new · Ctrl+1..9 switch · Ctrl+W close · Ctrl+Shift+T reopen"));
 }
 function switchTo(id) {
-  if (!id || id === session) { renderSessions(); return; }
-  session = id; openFiles.clear(); activeFile = ""; showFile(""); renderSessions(); send({ type: "state" });
+  if (!id || id === session) return;  // re-drawing here would eat the second click of a rename
+  session = id; openFiles.clear(); activeFile = ""; showFile("");
+  // Mark the tab in place: rebuilding the strip here would swallow the second click of a rename.
+  document.querySelectorAll(".stab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.id === id)));
+  send({ type: "state" });
 }
-function newTab() { send({ type: "tab_new" }); }
+function newTab() {
+  const dlg = $("newtabdlg"); if (dlg.open) return;
+  $("ntcwd").value = (state && state.cwd) || "";
+  const sel = $("ntmodel"); sel.replaceChildren();
+  ((state && state.models) || []).forEach((m) => sel.append(new Option(m, m, false, state && m === state.model)));
+  $("ntiso").checked = false; dlg.showModal(); $("ntcwd").select();
+}
+$("newtabform").addEventListener("submit", () => {
+  send({ type: "tab_new", cwd: $("ntcwd").value.trim(), model: $("ntmodel").value, isolated: $("ntiso").checked });
+});
+$("ntcancel").onclick = () => $("newtabdlg").close();
+function reopenTab() { send({ type: "tab_reopen" }); }
+function renameTab(t, tabButton) {
+  // A text field cannot live inside a <button>, so the field takes the whole tab's place.
+  const box = document.createElement("input"); box.className = "renamebox"; box.value = t.label; box.maxLength = 40;
+  box.setAttribute("aria-label", "Tab name");
+  tabButton.replaceWith(box); box.focus(); box.select();
+  let done = false;
+  const finish = (save) => { if (done) return; done = true; if (save && box.value.trim() && box.value.trim() !== t.label) send({ type: "tab_rename", tab: t.id, label: box.value.trim() }); renderSessions(); };
+  box.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") finish(true); if (e.key === "Escape") finish(false); };
+  box.onblur = () => finish(true); box.onclick = (e) => e.stopPropagation();
+}
 function closeTab(id) { send({ type: "tab_close", tab: id }); }
 
 function send(message) {
@@ -893,21 +981,122 @@ $("stop").addEventListener("click", () => send({ type: "cancel" }));
 $("model").addEventListener("change", (event) => send({ type: "prompt", text: "/model " + event.target.value }));
 $("mode").addEventListener("change", (event) => send({ type: "prompt", text: "/mode " + event.target.value }));
 document.addEventListener("keydown", (event) => {
-  const typing = event.target === input && input.value !== "";
+  // Approval keys only when no text field has the focus (an empty message box does not count).
+  const field = event.target.matches && event.target.matches("input, select, textarea");
+  const typing = field && !(event.target === input && input.value === "");
   if (approvals.length && !typing && !event.ctrlKey && !event.altKey && !event.metaKey) {
     const isPlan = approvals[0].tool === "ExitPlanMode";
     if (event.key === "y") { event.preventDefault(); answer("yes"); return; }
     if (event.key === "n") { event.preventDefault(); answer("no"); return; }
     if (event.key === "a" && !isPlan) { event.preventDefault(); answer("always"); return; }
   }
+  if (/^F[1-9]$/.test(event.key) && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+    event.preventDefault();  // F5 would reload the page, F1/F3/F6/F7 open browser features
+    if (!$("newtabdlg").open) pressMod(event.key);
+    return;
+  }
   if (event.key === "Escape" && busy) send({ type: "cancel" });
+  if (event.altKey && !event.ctrlKey && event.key.toLowerCase() === "m") { event.preventDefault(); toggleMic(); return; }
   // Ctrl (or Alt, where the browser keeps Ctrl+T and Ctrl+W for itself) + T new, + W close, + 1..9 switch.
+  if ((event.ctrlKey || event.altKey) && event.shiftKey && event.key.toLowerCase() === "t") { event.preventDefault(); reopenTab(); return; }
   if (!(event.ctrlKey || event.altKey) || event.shiftKey) return;
   const key = event.key.toLowerCase();
   if (key === "t") { event.preventDefault(); newTab(); }
   else if (key === "w") { event.preventDefault(); if (tabList.length > 1) closeTab(session); }
   else if (/^[1-9]$/.test(key) && tabList[Number(key) - 1]) { event.preventDefault(); switchTo(tabList[Number(key) - 1].id); }
 });
+
+/* ---------------- mods: F1-F9 from mods.toml, run by the panel server with the usual approvals ---------------- */
+let modList = [], modNoteTimer = null;
+function modNote(text) { $("modnote").textContent = text; clearTimeout(modNoteTimer); if (text) modNoteTimer = setTimeout(() => { $("modnote").textContent = ""; }, 9000); }
+function drawMods(mods) {
+  if (mods) modList = mods;
+  const bar = $("mods"), note = $("modnote");
+  bar.replaceChildren(el("b", null, "MODS"));
+  modList.forEach((m) => {
+    if (m.kind === "error") { note.textContent = `mods.toml: ${m.note}`; return; }
+    const b = el("button", `k-${m.kind}` + (m.why ? " off" : "")); b.type = "button";
+    b.title = `${m.key} ${m.label} · ${m.kind}${m.confirm ? " · asks first" : ""}\n${m.note}${m.why ? `\nnot now: ${m.why}` : ""}`;
+    b.append(el("i", null, m.key), el("span", null, m.label));
+    b.onclick = () => pressMod(m.key); bar.append(b);
+  });
+  const edit = el("button", "edit", "Edit mods"); edit.type = "button"; edit.title = "Show mods.toml and where to edit it";
+  edit.onclick = () => send({ type: "mods_file" }); bar.append(edit, note);
+}
+function pressMod(key) {
+  const m = modList.find((x) => x.key === key); if (!m) return;
+  if (m.why) { modNote(`${m.key} ${m.label}: ${m.why}`); return; }
+  const prompt = input.value.trim();
+  if (m.ask && !prompt) { modNote(`${m.key} ${m.label}: type ${m.ask} in the message box, then press ${m.key} again`); input.focus(); return; }
+  document.querySelectorAll(".mods button").forEach((b) => b.classList.toggle("on", !!b.querySelector("i") && b.querySelector("i").textContent === key));
+  setTimeout(() => document.querySelectorAll(".mods button.on").forEach((b) => b.classList.remove("on")), 1200);
+  modNote(`${m.key} ${m.label}: ${m.note}`);
+  send({ type: "mod", key, prompt });
+  if (m.ask) { input.value = ""; input.dispatchEvent(new Event("input")); }
+}
+function refreshMods() { send({ type: "mods" }); }
+
+/* ---------------- voice: mic -> local Whisper on the panel server -> the message box ---------------- */
+const VOICE_MAX_MS = 120000;
+let recorder = null, recChunks = [], recStarted = 0, recTimer = null, lastLang = "";
+function pref(key, value) {
+  try { if (value === undefined) return localStorage.getItem("mwm-" + key) === "1"; localStorage.setItem("mwm-" + key, value ? "1" : "0"); } catch (e) { return false; }
+}
+$("autosend").checked = pref("autosend"); $("speak").checked = pref("speak");
+$("autosend").onchange = (e) => pref("autosend", e.target.checked);
+$("speak").onchange = (e) => { pref("speak", e.target.checked); if (!e.target.checked) speechSynthesis.cancel(); };
+function micState(mode, label) { const b = $("mic"); b.className = "mic" + (mode ? " " + mode : ""); $("miclabel").textContent = label; }
+function heard(text, bad) { const h = $("heard"); h.textContent = text; h.className = "heard" + (bad ? " bad" : ""); h.title = text; }
+async function toggleMic() {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { heard("this browser cannot record audio", true); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { heard(`no microphone: ${e.message}`, true); return; }
+  speechSynthesis.cancel();
+  recChunks = [];
+  recorder = new MediaRecorder(stream, MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? { mimeType: "audio/webm;codecs=opus" } : {});
+  recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+  recorder.onstop = async () => {
+    clearInterval(recTimer); stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(recChunks, { type: recorder.mimeType || "audio/webm" });
+    if (blob.size < 1200) { micState("", "mic"); heard("too short, nothing sent", true); return; }
+    micState("busy", "…"); heard("transcribing on this machine");
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    send({ type: "transcribe", audio: btoa(bin) });
+  };
+  send({ type: "voice_warm" });  // the server loads Whisper while you speak
+  recorder.start(); recStarted = Date.now();
+  micState("rec", "0:00"); heard("listening, click the mic or Alt+M to stop");
+  recTimer = setInterval(() => {
+    const ms = Date.now() - recStarted; micState("rec", `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`);
+    if (ms > VOICE_MAX_MS && recorder.state === "recording") recorder.stop();
+  }, 250);
+}
+function spokenCommand(text) {
+  // "slash plan" / "skråstrek plan" at the start becomes the /plan command.
+  return text.replace(/^\s*(slash|skråstrek)\s+([a-zæøå-]+)[.!?]?/i, (_, __, word) => "/" + word.toLowerCase());
+}
+function transcriptLoaded(e) {
+  micState("", "mic");
+  if (e.error) { heard(`voice failed: ${e.error}`, true); return; }
+  if (!e.text) { heard("heard nothing", true); return; }
+  lastLang = e.language || "";
+  const text = spokenCommand(e.text);
+  input.value = input.value.trim() ? `${input.value.trimEnd()} ${text}` : text;
+  input.dispatchEvent(new Event("input")); input.focus();
+  heard(`heard in ${e.seconds} s · ${e.model}${e.language ? " · " + e.language : ""}`);
+  if ($("autosend").checked) $("form").requestSubmit();
+}
+function speakAnswer(text) {
+  if (!$("speak").checked || !text || !window.speechSynthesis) return;
+  const plain = text.replace(/```[\s\S]*?```/g, " (code) ").replace(/[`*#>_]/g, "").replace(/\s+/g, " ").trim().slice(0, 700);
+  const u = new SpeechSynthesisUtterance(plain);
+  u.lang = lastLang === "no" || lastLang === "nn" ? "nb-NO" : "en-US";
+  speechSynthesis.cancel(); speechSynthesis.speak(u);
+}
+$("mic").onclick = toggleMic;
 
 /* ---------------- MNQ chart: TopstepX bars through the panel server, Yahoo (delayed) as fallback ---------------- */
 let chartTf = 5, chartData = null, chartTimer = null;

@@ -45,6 +45,7 @@ HELP = """\
 /compact [focus]      replace the history with a summary written by the model
 /init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
+/tab [new [DIR]|N|close [N]]  sessions in this terminal: list, open one (same model), switch, close
 /clear                forget the conversation (the transcript file is kept)
 /quit                 leave"""
 
@@ -293,6 +294,69 @@ def run_command(
     return True
 
 
+class Tabs:
+    """The terminal's sessions; one turn runs at a time, in the session on screen."""
+
+    def __init__(self, first: Session, printer: Any) -> None:
+        self.sessions = [first]
+        self.current = first
+        self.printer = printer
+
+    def listing(self) -> list[str]:
+        return [
+            f"{'*' if s is self.current else ' '} {n}  {s.cwd}  {s.model.id}"
+            for n, s in enumerate(self.sessions, 1)
+        ]
+
+    async def command(self, text: str, out: Any) -> bool:
+        """Handle ``/tab ...``. Returns False when ``text`` is not a tab command."""
+        words = text.split()
+        if words[0] != "/tab":
+            return False
+        action = words[1] if len(words) > 1 else "list"
+        if action == "new":
+            folder = Path(" ".join(words[2:])).expanduser() if len(words) > 2 else self.current.cwd
+            if not folder.is_dir():
+                out.line(f"no such folder: {folder}")
+                return True
+            session = self.current.sibling(folder.resolve(), self.current.model)
+            session.bus.subscribe(self.printer)
+            await session.start()
+            self.sessions.append(session)
+            self.current = session
+            out.line(f"tab {len(self.sessions)}: {session.cwd}")
+        elif action == "close":
+            number = int(words[2]) if len(words) > 2 and words[2].isdigit() else None
+            target = (
+                self.sessions[number - 1]
+                if number and number <= len(self.sessions)
+                else self.current
+            )
+            if len(self.sessions) == 1:
+                out.line("the last tab stays open; /quit leaves")
+                return True
+            self.sessions.remove(target)
+            await target.close()
+            if target is self.current:
+                self.current = self.sessions[-1]
+            out.line(f"closed; on tab {self.sessions.index(self.current) + 1}: {self.current.cwd}")
+        elif action.isdigit():
+            number = int(action)
+            if not 1 <= number <= len(self.sessions):
+                out.line(f"no tab {number}; /tab lists them")
+                return True
+            self.current = self.sessions[number - 1]
+            out.line(f"tab {number}: {self.current.cwd} ({len(self.current.messages)} messages)")
+        else:
+            for row in self.listing():
+                out.line(row)
+        return True
+
+    async def close(self) -> None:
+        for session in self.sessions:
+            await session.close()
+
+
 async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
     out = Printer(color=sys.stdout.isatty())
     session.bus.subscribe(out)
@@ -304,10 +368,11 @@ async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
         f"{sum(1 for name in session.tools if name.startswith('mcp__'))} MCP tools | "
         f"{len(session.skills)} skills | /help"
     )
+    tabs = Tabs(session, out)
     loop = asyncio.get_running_loop()
 
     def on_interrupt() -> None:
-        if not session.cancel():
+        if not tabs.current.cancel():
             out.line("(no turn is running; /quit or Ctrl-D leaves)")
 
     loop.add_signal_handler(signal.SIGINT, on_interrupt)
@@ -319,20 +384,23 @@ async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
                 break
             if not text:
                 continue
+            current = tabs.current
             if text.startswith("/"):
-                if await run_async_command(session, text, out):
+                if await tabs.command(text, out):
                     continue
-                outcome = run_command(session, models, text, out)
+                if await run_async_command(current, text, out):
+                    continue
+                outcome = run_command(current, models, text, out)
                 if outcome is False:
                     break
                 if outcome is True:
                     continue
                 text = outcome
-            await session.send(text)
+            await current.send(text)
             out.line()
     finally:
         loop.remove_signal_handler(signal.SIGINT)
-        await session.close()
+        await tabs.close()
 
 
 def resolve_session(cwd: Path, token: str) -> Path | None:

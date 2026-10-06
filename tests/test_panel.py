@@ -180,3 +180,32 @@ def test_the_page_can_ask_for_chart_bars(make_session):
         ws.send_json({"type": "bars", "symbol": "MNQ", "minutes": 5})
         bars = until(ws, "Bars")[-1]
         assert bars["symbol"] == "MNQ" and bars["minutes"] == 5 and "tab" not in bars
+
+
+def test_the_mic_clip_is_transcribed_and_bad_clips_are_refused(make_session):
+    import base64
+
+    from mwm_harness.voice import Transcript
+
+    session, _, _ = make_session([])
+    app = create_app(session, {session.model.id: session.model}, TOKEN, PORT)
+    heard = []
+
+    async def fake_transcribe(blob):
+        heard.append(blob)
+        return Transcript("open a new tab", "en", 0.4, "medium on cuda")
+
+    app.state.panel.voice.transcribe = fake_transcribe
+    with (
+        TestClient(app, base_url=BASE) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "Tabs")
+        ws.send_json({"type": "transcribe", "audio": base64.b64encode(b"webm-bytes").decode()})
+        result = until(ws, "Transcript")[-1]
+        assert result["text"] == "open a new tab" and result["model"] == "medium on cuda"
+        assert heard == [b"webm-bytes"]
+        ws.send_json({"type": "transcribe", "audio": "not base64!"})
+        assert "base64" in until(ws, "Transcript")[-1]["error"]
+        ws.send_json({"type": "transcribe"})
+        assert "no audio" in until(ws, "Transcript")[-1]["error"]
