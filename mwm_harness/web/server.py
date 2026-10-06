@@ -35,6 +35,7 @@ from mwm_harness.loop import Session
 from mwm_harness.mcp_client import McpManager
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
+from mwm_harness.web.market import MarketFeed
 from mwm_harness.web.vendor import design_dir, design_ready, monaco_dir, monaco_ready
 
 STATIC = Path(__file__).parent / "static"
@@ -315,6 +316,7 @@ class Panel:
         self.token = token
         self.max_tabs = max_tabs
         self.mcp = session.mcp
+        self.market = MarketFeed(session.settings.chart_env_file)
         self.factory = factory or (lambda cwd, model: _sibling_session(session, cwd, model))
         self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
         self.tabs: dict[str, Tab] = {}
@@ -372,6 +374,13 @@ class Panel:
                 self.broadcast(self.tabs_payload())
         elif kind == "tabs":
             reply.put_nowait(self.tabs_payload())
+        elif kind == "bars":
+            minutes = message.get("minutes")
+            reply.put_nowait(
+                await self.market.bars(
+                    str(message.get("symbol") or "MNQ"), minutes if isinstance(minutes, int) else 5
+                )
+            )
         else:
             tab = self.tabs.get(str(message.get("tab"))) or self.first
             await tab.handle(message, reply)
@@ -429,6 +438,7 @@ class Panel:
                 await tab.session.close()
         if close_sessions and self.mcp is not None:
             await self.mcp.close()
+        await self.market.close()
 
 
 def _sibling_session(template: Session, cwd: Path, model: ModelSpec) -> Session:

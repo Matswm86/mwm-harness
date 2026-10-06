@@ -162,3 +162,21 @@ def test_state_lists_mcp_servers_for_the_rail(make_session):
     ):
         state = until(ws, "State")[-1]
         assert state["mcp"] == []
+
+
+def test_the_page_can_ask_for_chart_bars(make_session):
+    session, _, _ = make_session([])
+    app = create_app(session, {session.model.id: session.model}, TOKEN, PORT)
+
+    async def fake_bars(symbol, minutes):
+        return {"type": "Bars", "symbol": symbol, "minutes": minutes, "bars": [{"time": 1}]}
+
+    app.state.panel.market.bars = fake_bars
+    with (
+        TestClient(app, base_url=BASE) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "Tabs")
+        ws.send_json({"type": "bars", "symbol": "MNQ", "minutes": 5})
+        bars = until(ws, "Bars")[-1]
+        assert bars["symbol"] == "MNQ" and bars["minutes"] == 5 and "tab" not in bars

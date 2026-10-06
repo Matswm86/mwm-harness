@@ -123,7 +123,11 @@ stdio server plays MCP, a mocked transport plays the web.
   written as a satellite, the Oslo trading day as the outer ring); a code pane
   under it that shows each Edit and Write as it is proposed and keeps a result
   card per finished turn; the chat on the right with approval cards (`y`, `a`,
-  `n`; Esc stops a turn). The MNQ chart, background jobs, machines, handoffs and
+  `n`; Esc stops a turn). Above the chat, an MNQ candle chart (5 or 1 minute,
+  Oslo time, refreshed every 20 s) from TopstepX's read-only bars endpoint, with
+  Yahoo NQ=F as a fallback marked delayed; credentials come from
+  `PROJECT_X_USERNAME` / `PROJECT_X_API_KEY` or the file in the `chart_env_file`
+  setting and never reach the page. Background jobs, machines, handoffs and
   MASTER_TODO have a place in the layout and no data source yet. Slash commands work in
   the message box. The server binds to 127.0.0.1, refuses any `Host` header but
   its own, refuses a websocket from another `Origin`, and needs a per-launch

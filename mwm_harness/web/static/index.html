@@ -175,8 +175,15 @@ canvas#gl:active{cursor:grabbing}
 
 /* ---------- right: chart strip over chat ---------- */
 .right{grid-area:right;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px;min-height:0}
-.chart{padding:8px 12px;display:flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--muted)}
-.chart strong{font:700 13px var(--display);color:var(--text)}
+.chart{padding:8px 10px 6px}
+.chart header{display:flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--muted)}
+.chart header strong{font:700 13px var(--display);color:var(--text)}
+.chart header .seg button{padding:2px 8px;font-size:11px}
+.chart canvas{display:block;width:100%;height:190px;margin-top:4px}
+.chart footer{display:flex;justify-content:space-between;gap:8px;font:9.5px var(--mono);color:var(--faint);letter-spacing:.04em}
+.chart footer .bad{color:var(--alert)} .chart footer .warn{color:var(--gold)}
+.px{font:600 12px var(--mono);color:var(--text)}
+.up{color:var(--ok)} .dn{color:var(--alert)}
 .chat{display:grid;grid-template-rows:auto minmax(0,1fr) auto}
 .chat header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
 .chat header h2{margin:0;font:700 13px var(--display)}
@@ -258,6 +265,7 @@ canvas#gl:active{cursor:grabbing}
     <span class="chip" title="Model requests this session">requests <b id="reqs">0</b></span>
     <span class="chip" id="sandbox" title="Shell sandbox">shell sandbox <b>?</b></span>
     <span class="grow"></span>
+    <span title="MNQ, last trade of the chart feed">MNQ <span class="px" id="mnqpx">--</span> <span id="mnqd"></span></span>
     <span>Oslo <b id="oslo">--:--</b> · ET <b id="et">--:--</b></span>
     <span class="chip" id="sess">--</span>
     <span class="chip" title="Topstep flattens every position at 16:10 ET">flatten in <b id="flat">--</b></span>
@@ -309,7 +317,13 @@ canvas#gl:active{cursor:grabbing}
   </main>
 
   <aside class="right">
-    <section class="pane chart" aria-label="MNQ chart"><strong>MNQ</strong><span>chart not wired yet: needs a bars feed</span></section>
+    <section class="pane chart" aria-label="MNQ chart">
+      <header><strong>MNQ</strong><span id="rng">loading</span><span class="grow"></span>
+        <div class="seg" role="group" aria-label="Candle size"><button aria-pressed="false" data-tf="1">1m</button><button aria-pressed="true" data-tf="5">5m</button></div>
+      </header>
+      <canvas id="chart" aria-label="Candlestick chart of MNQ futures"></canvas>
+      <footer><span id="chartsrc">source --</span><span>Oslo time · view only</span></footer>
+    </section>
     <section class="pane chat" aria-label="Conversation">
       <header><h2>Session</h2><span id="sesslabel"></span></header>
       <div class="log" id="log" aria-live="polite"></div>
@@ -794,6 +808,7 @@ const handlers = {
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
   ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
   CommandOutput: (e) => { current = null; add(el("pre", "cmdout", `${e.command}\n${e.text}`)); },
+  Bars: barsLoaded,
   Tabs: (e) => { tabList = e.tabs; renderSessions(); if (e.active) switchTo(e.active); },
   TabClosed: (e) => { outputs.delete(e.tab); if (e.tab === session) switchTo((tabList.find((t) => t.id !== e.tab) || {}).id || ""); },
 };
@@ -831,7 +846,7 @@ function send(message) {
 function connect() {
   if (!token) { $("conn").textContent = "no access token: open the address printed by mwm --web"; $("conn").className = "down"; return; }
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; };
+  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; startChart(); };
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
     if (e.type === "State" && !session) { session = e.tab || ""; renderSessions(); }
@@ -893,6 +908,75 @@ document.addEventListener("keydown", (event) => {
   else if (key === "w") { event.preventDefault(); if (tabList.length > 1) closeTab(session); }
   else if (/^[1-9]$/.test(key) && tabList[Number(key) - 1]) { event.preventDefault(); switchTo(tabList[Number(key) - 1].id); }
 });
+
+/* ---------------- MNQ chart: TopstepX bars through the panel server, Yahoo (delayed) as fallback ---------------- */
+let chartTf = 5, chartData = null, chartTimer = null;
+const osloTime = (sec) => new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Oslo", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(sec * 1000));
+function requestBars() { send({ type: "bars", symbol: "MNQ", minutes: chartTf }); }
+function startChart() { clearInterval(chartTimer); requestBars(); chartTimer = setInterval(() => { if (!document.hidden) requestBars(); }, 20000); }
+document.addEventListener("visibilitychange", () => { if (!document.hidden) requestBars(); });
+document.querySelectorAll("[data-tf]").forEach((b) => b.onclick = () => {
+  chartTf = Number(b.dataset.tf); document.querySelectorAll("[data-tf]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  requestBars();
+});
+function barsLoaded(e) {
+  if (e.minutes !== chartTf) return;
+  const src = $("chartsrc"); src.replaceChildren();
+  if (!e.bars.length) {
+    src.append(el("span", "bad", "no bars: " + (e.errors || []).join("; ")));
+    chartData = null; drawChart(); return;
+  }
+  chartData = e;
+  src.append(`${e.source} · ${e.contract}`);
+  if (e.delayed) src.append(" · ", el("span", "warn", "delayed"));
+  if (e.errors && e.errors.length) { src.append(" · "); const w = el("span", "warn", "TopstepX failed"); w.title = e.errors.join("\n"); src.append(w); }
+  drawChart();
+}
+function drawChart() {
+  const cv = $("chart"), cx = cv.getContext("2d"), dpr = Math.min(devicePixelRatio, 2), W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  cv.width = W * dpr; cv.height = H * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, W, H);
+  if (!chartData) { $("rng").textContent = "no data"; return; }
+  const all = chartData.bars, bars = all.slice(-Math.max(30, Math.floor(W / 5)));
+  const padR = 62, padB = 16, volH = 22, w = W - padR, h = H - padB - volH - 4;
+  const hi = Math.max(...bars.map((b) => b.high)), lo = Math.min(...bars.map((b) => b.low)), span = Math.max(hi - lo, 1);
+  const step = span > 400 ? 100 : span > 160 ? 50 : span > 80 ? 25 : span > 30 ? 10 : 5;
+  const y = (p) => 4 + (hi - p) / span * (h - 8);
+  const bw = w / bars.length, vmax = Math.max(1, ...bars.map((b) => b.volume));
+  cx.font = '500 9.5px "JetBrains Mono", monospace'; cx.textBaseline = "middle";
+  for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) {
+    const yy = Math.round(y(p)) + .5; cx.strokeStyle = "rgba(160,190,255,.08)"; cx.beginPath(); cx.moveTo(0, yy); cx.lineTo(w, yy); cx.stroke();
+    cx.fillStyle = "#4d566b"; cx.fillText(p.toLocaleString("en-US"), w + 6, yy);
+  }
+  const labelEvery = Math.max(1, Math.round(60 / bw));
+  bars.forEach((b, i) => {
+    const x = i * bw + bw / 2, up = b.close >= b.open, col = up ? "#6ee7a8" : "#ff6b5b", t = osloTime(b.time);
+    for (const [mark, name] of [["09:00", "London"], ["15:30", "NY open"]]) {
+      if (t !== mark) continue;
+      cx.strokeStyle = "rgba(255,179,71,.45)"; cx.setLineDash([3, 3]); cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, h + volH + 4); cx.stroke(); cx.setLineDash([]);
+      cx.fillStyle = "#ffb347"; cx.textBaseline = "top"; cx.fillText(name, x + 4, 2); cx.textBaseline = "middle";
+    }
+    cx.strokeStyle = col; cx.fillStyle = col; cx.beginPath(); cx.moveTo(Math.round(x) + .5, y(b.high)); cx.lineTo(Math.round(x) + .5, y(b.low)); cx.stroke();
+    const top = y(Math.max(b.open, b.close)), bh = Math.max(1, Math.abs(y(b.open) - y(b.close)));
+    cx.fillRect(x - Math.max(1, bw * .34), top, Math.max(2, bw * .68), bh);
+    cx.globalAlpha = .35; const vh = b.volume / vmax * volH; cx.fillRect(x - Math.max(1, bw * .34), H - padB - vh, Math.max(2, bw * .68), vh); cx.globalAlpha = 1;
+    if (i % labelEvery === 0) { cx.fillStyle = "#4d566b"; cx.textBaseline = "alphabetic"; cx.fillText(t, Math.max(0, x - 12), H - 3); cx.textBaseline = "middle"; }
+  });
+  const last = bars[bars.length - 1], ly = y(last.close);
+  cx.strokeStyle = "rgba(232,236,245,.4)"; cx.setLineDash([2, 3]); cx.beginPath(); cx.moveTo(0, ly); cx.lineTo(w, ly); cx.stroke(); cx.setLineDash([]);
+  cx.fillStyle = "#e8ecf5"; cx.fillRect(w + 2, ly - 8, padR - 2, 16); cx.fillStyle = "#05070d"; cx.font = '600 10px "JetBrains Mono", monospace';
+  cx.fillText(last.close.toLocaleString("en-US", { minimumFractionDigits: 2 }), w + 5, ly);
+  // Today's Globex session starts with the first bar after the daily 17:00-18:00 ET halt.
+  let open = 0;
+  for (let i = all.length - 1; i > 0; i--) if (all[i].time - all[i - 1].time > 45 * 60) { open = i; break; }
+  const first = all[open], d = last.close - first.open;
+  $("rng").textContent = `${chartTf}m · H ${hi.toLocaleString("en-US")} L ${lo.toLocaleString("en-US")}`;
+  $("mnqpx").textContent = last.close.toLocaleString("en-US", { minimumFractionDigits: 2 });
+  const dd = $("mnqd"); dd.textContent = (d >= 0 ? "+" : "") + d.toFixed(2); dd.className = d >= 0 ? "up" : "dn";
+  dd.title = `change since the Globex open, ${osloTime(first.time)} Oslo`;
+}
+new ResizeObserver(drawChart).observe($("chart"));
+if (document.fonts) document.fonts.ready.then(drawChart);
 
 /* ---------------- 3D scene: the agent as the sun, MCP servers, agents, the Oslo trading day ---------------- */
 let scene = null;

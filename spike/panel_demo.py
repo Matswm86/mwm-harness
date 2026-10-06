@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 import uvicorn
-from mwm_harness.config import ModelSpec, Settings
+from mwm_harness.config import ModelSpec, Settings, load_settings
 from mwm_harness.loop import Session
 from mwm_harness.providers import ScriptedProvider, chunks_for
 from mwm_harness.web.server import create_app
@@ -72,7 +72,8 @@ async def main(port: int) -> None:
             cwd=project,
             model=MODELS["scripted-qwen"],
             provider=ScriptedProvider(script()),
-            settings=Settings(sandbox="off"),
+            # the chart reads the same credentials file as a real session
+            settings=Settings(sandbox="off", chart_env_file=load_settings().chart_env_file),
             hook_settings=[],
             sessions_dir=Path(folder) / "sessions",
             system_prompt="demo",
