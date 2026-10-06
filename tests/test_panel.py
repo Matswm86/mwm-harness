@@ -141,3 +141,24 @@ def test_slash_commands_answer_into_the_page(make_session):
         assert "permission mode: plan" in seen[-1]["text"]
         ws.send_json({"type": "prompt", "text": "/help"})
         assert "/mcp" in until(ws, "CommandOutput")[-1]["text"]
+
+
+def test_state_lists_mcp_servers_for_the_rail(make_session):
+    from mwm_harness.mcp_client import McpManager, ServerConfig
+    from mwm_harness.web.server import mcp_servers
+
+    manager = McpManager({"brain": ServerConfig("brain", "http", url="http://127.0.0.1:1/mcp")})
+    manager.listings["brain"] = [{"name": "search"}, {"name": "ingest"}]
+    assert mcp_servers(manager) == [
+        {"name": "brain", "transport": "http", "tools": 2, "state": "idle", "error": ""}
+    ]
+    manager.servers["brain"].error = "HTTP 500"
+    assert mcp_servers(manager)[0]["state"] == "failed"
+    assert mcp_servers(None) == []
+    session, _, _ = make_session([])
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        state = until(ws, "State")[-1]
+        assert state["mcp"] == []

@@ -32,14 +32,34 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec
 from mwm_harness.loop import Session
+from mwm_harness.mcp_client import McpManager
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
-from mwm_harness.web.vendor import monaco_dir, monaco_ready
+from mwm_harness.web.vendor import design_dir, design_ready, monaco_dir, monaco_ready
 
 STATIC = Path(__file__).parent / "static"
 POLICY_VIOLATION = 1008
-CDN = "https://cdn.jsdelivr.net"  # the code viewer (Monaco) loads from here; see index.html
+CDN = "https://cdn.jsdelivr.net"  # code viewer, 3D library and fonts load from here; see index.html
 QUIET_EVENTS = (ev.HookContext,)  # large and only useful in the transcript
+
+
+def mcp_servers(manager: McpManager | None) -> list[dict[str, Any]]:
+    """One row per configured MCP server, for the panel's rail and scene."""
+    if manager is None:
+        return []
+    rows = []
+    for name, server in manager.servers.items():
+        state = "failed" if server.error else "running" if server.running else "idle"
+        rows.append(
+            {
+                "name": name,
+                "transport": server.config.transport,
+                "tools": len(manager.listings.get(name, [])),
+                "state": state,
+                "error": server.error,
+            }
+        )
+    return rows
 
 
 class HostGuard:
@@ -81,6 +101,7 @@ class Tab:
         self.label = label
         self.pending: dict[str, tuple[dict[str, Any], asyncio.Future[str]]] = {}
         self.turn: asyncio.Task[Any] | None = None
+        self.ended = False  # TurnEnded seen while the turn's task is still finishing
         session.bus.subscribe(self.on_event)
         session.approver = self
 
@@ -94,6 +115,7 @@ class Tab:
             payload.update(self.usage())
         self.broadcast(payload)
         if isinstance(event, ev.TurnStarted | ev.TurnEnded):
+            self.ended = isinstance(event, ev.TurnEnded)
             self.panel.broadcast(self.panel.tabs_payload())
 
     def broadcast(self, payload: dict[str, Any]) -> None:
@@ -135,6 +157,7 @@ class Tab:
                 {"role": m.role, "blocks": m.blocks()} for m in session.messages if not m.is_meta
             ],
             "approvals": [request for request, _ in self.pending.values()],
+            "mcp": mcp_servers(session.mcp or self.panel.mcp),
         }
 
     # ----------------------------------------------------------- approvals
@@ -171,7 +194,7 @@ class Tab:
 
     @property
     def busy(self) -> bool:
-        return self.turn is not None and not self.turn.done()
+        return self.turn is not None and not self.turn.done() and not self.ended
 
     async def handle(self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]) -> None:
         kind = message.get("type")
@@ -447,9 +470,9 @@ def create_app(
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
 
-    # With the code viewer fetched once (mwm --vendor-monaco) the page needs no other
-    # host at all, so the CDN leaves the policy; the page tries /vendor first either way.
-    vendored = monaco_ready()
+    # With the code viewer, 3D library and fonts fetched once (mwm --vendor-monaco) the page
+    # needs no other host at all, so the CDN leaves the policy; the page tries /vendor first.
+    vendored = monaco_ready() and design_ready()
     cdn = "" if vendored else f" {CDN}"
     csp = (
         f"default-src 'self'; script-src 'self' 'unsafe-inline'{cdn}; "
@@ -457,8 +480,10 @@ def create_app(
         f"worker-src blob:; connect-src 'self'{cdn} "
         f"ws://127.0.0.1:{port} ws://localhost:{port}; frame-ancestors 'none'"
     )
-    if vendored:
+    if monaco_ready():
         app.mount("/vendor/monaco", StaticFiles(directory=monaco_dir()), name="monaco")
+    if design_ready():
+        app.mount("/vendor/design", StaticFiles(directory=design_dir()), name="design")
 
     @app.get("/")
     async def index() -> Response:

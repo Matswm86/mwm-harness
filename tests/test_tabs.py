@@ -102,3 +102,13 @@ def test_a_message_without_a_tab_goes_to_the_first_tab(make_session):
         ws.send_json({"type": "prompt", "text": "hi"})
         ended = until(ws, "TurnEnded")[-1]
         assert ended["tab"] == "t1" and ended["text"] == "First."
+
+
+def test_the_tab_list_sent_with_turn_ended_shows_the_tab_idle(make_session):
+    first, _, client = two_tab_client(make_session, [chunks_for("Done.")], [])
+    with client, client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws:
+        until(ws, "Tabs")
+        ws.send_json({"type": "prompt", "text": "hi", "tab": "t1"})
+        until(ws, "TurnEnded", "t1")
+        tabs = until(ws, "Tabs")[-1]["tabs"]
+        assert tabs[0]["busy"] is False

@@ -112,11 +112,19 @@ stdio server plays MCP, a mocked transport plays the web.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
   stream) prints dimmed as it arrives; `/think off` hides it.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
-- `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`. One
-  page, one websocket, the same `Session` as the terminal: chat with streamed
-  text, tool cards, a status bar (model, permission mode, context share, tokens
-  in, out and cached, request count), the task list ticking live, the last plan,
-  and approval dialogs (`y`, `a`, `n`; Esc stops a turn). Slash commands work in
+- `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`, in
+  the dark command-center layout. One page, one websocket, the same `Session` as
+  the terminal. A status strip (model, permission mode, context share, tokens in,
+  out and cached, request count, shell sandbox, Oslo and New York clocks, the
+  trading session and Topstep's 16:10 ET flatten countdown); a left rail with
+  agents, finished-turn results, the task list, the last plan, MCP servers,
+  touched files and the file tree; a three.js scene in the middle (the agent as
+  a sun, MCP servers and subagents in orbit, a pulse per MCP call, the file being
+  written as a satellite, the Oslo trading day as the outer ring); a code pane
+  under it that shows each Edit and Write as it is proposed and keeps a result
+  card per finished turn; the chat on the right with approval cards (`y`, `a`,
+  `n`; Esc stops a turn). The MNQ chart, background jobs, machines, handoffs and
+  MASTER_TODO have a place in the layout and no data source yet. Slash commands work in
   the message box. The server binds to 127.0.0.1, refuses any `Host` header but
   its own, refuses a websocket from another `Origin`, and needs a per-launch
   token that travels in the address fragment, so it never reaches a log or a
@@ -130,10 +138,11 @@ stdio server plays MCP, a mocked transport plays the web.
 - `preview.py` and the panel's file views: a file tree of the project, tabs of
   open files, a list of files the tools touched, and a read-only code viewer
   (Monaco 0.56.0 from jsdelivr, or from the machine itself after
-  `mwm --vendor-monaco`, which downloads it once, checks a pinned sha512 and lets
-  the panel drop the CDN from its content security policy; with neither, the
-  page falls back to plain text). Before a `Write` or `Edit` is approved, its result is computed without
-  touching the disk and shown as a side-by-side diff; the terminal prompt prints
+  `mwm --vendor-monaco`, which downloads it, three.js 0.149.0 and the three
+  fonts once, checks each npm tarball against a pinned sha512 and lets the panel
+  drop the CDN from its content security policy; with neither, the page falls
+  back to plain text and system fonts). Before a `Write` or `Edit` is approved, its result is computed without
+  touching the disk and shown as a diff in the code pane; the terminal prompt prints
   the same change as a unified diff. Browsing answers only for paths inside the
   project: `..`, absolute paths and symlinks that lead out are refused.
 - `agents.py`: subagents. `agents/<name>.md` files (frontmatter `name`,
@@ -210,7 +219,7 @@ protocol handling) has had no review yet.
 .venv/bin/mwm --resume last       # continue the newest session of this directory
 .venv/bin/mwm --web               # browser panel on 127.0.0.1:8765 (needs the web extra)
 .venv/bin/mwm --open              # the same, shown in its own browser window
-.venv/bin/mwm --vendor-monaco     # once: fetch the code viewer for use with no network
+.venv/bin/mwm --vendor-monaco     # once: fetch the code viewer, 3D library and fonts
 .venv/bin/mwm -p "summarise README.md"
 .venv/bin/mwm-jev report          # the judge's decision log and hit rate
 ```

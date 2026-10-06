@@ -59,7 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--vendor-monaco",
         action="store_true",
-        help="download the panel's code viewer once (sha512-checked) for offline use",
+        help="download the panel's code viewer, 3D library and fonts once (sha512-checked) for offline use",
     )
     parser.add_argument("--version", action="version", version=f"mwm-harness {__version__}")
     return parser.parse_args(argv)
@@ -154,14 +154,17 @@ def _is_problem(event: object) -> bool:
 
 
 def vendor_monaco_command() -> int:
-    from mwm_harness.web.vendor import VendorError, vendor_monaco
+    from mwm_harness.web.vendor import VendorError, vendor_design, vendor_monaco
 
     try:
         root, count = vendor_monaco()
+        design_root, design_count = vendor_design()
     except (VendorError, OSError) as exc:
         print(f"mwm: {exc}", file=sys.stderr)
         return 1
-    print(f"code viewer ready: {count} files in {root}; the panel now runs with no network")
+    print(f"code viewer ready: {count} files in {root}")
+    print(f"3D scene and fonts ready: {design_count} files in {design_root}")
+    print("the panel now runs with no network")
     return 0
 
 
