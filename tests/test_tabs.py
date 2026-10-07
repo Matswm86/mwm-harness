@@ -133,7 +133,11 @@ def test_switching_to_a_tab_mid_turn_replays_the_running_turn(make_session):
         assert state["history"] == []  # the running turn is not finished history yet
         kinds = [e["type"] for e in state["live"]]
         assert kinds[0] == "TurnStarted" and state["live"][0]["prompt"] == "write a"
-        assert {"type": "TextDelta", "text": "Writing now."} in state["live"]
+        texts = [e for e in state["live"] if e["type"] == "TextDelta"]
+        assert [e["text"] for e in texts] == ["Writing now."]
+        assert all(
+            e["ts"].endswith("Z") for e in state["live"]
+        )  # every replayed event keeps its time
         assert "ToolStarted" in kinds
         ws.send_json({"type": "cancel", "tab": "t1"})
         until(ws, "TurnEnded", "t1")

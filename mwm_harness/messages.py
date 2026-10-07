@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from mwm_harness.events import now_stamp
 from mwm_harness.streaming import AssembledTurn
 
 Block = dict[str, Any]
@@ -30,6 +31,7 @@ class Message:
     # (hook feedback, injected context). Gates skip them when looking for the prompt.
     is_meta: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    ts: str = field(default_factory=now_stamp, compare=False)
 
     def blocks(self) -> list[Block]:
         if isinstance(self.content, str):

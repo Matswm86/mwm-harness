@@ -10,6 +10,7 @@ import asyncio
 import json
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,16 +82,28 @@ class Printer:
         self.show_thinking = True
         self._mid_line = False
         self._thinking = False
+        self._answering = False  # inside a stamped answer block
 
     def paint(self, code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if self.color else text
 
-    def line(self, text: str = "") -> None:
+    def stamp(self, event: ev.Event | None = None) -> str:
+        """Local wall-clock time of the event (now when there is none), as a dim prefix."""
+        try:
+            if event is None:
+                raise ValueError
+            when = datetime.fromisoformat(event.ts.replace("Z", "+00:00")).astimezone()
+        except ValueError:
+            when = datetime.now().astimezone()
+        return self.paint(DIM, when.strftime("%H:%M:%S")) + " "
+
+    def line(self, text: str = "", event: ev.Event | None = None, stamp: bool = True) -> None:
         self._end_thinking()
+        self._answering = False
         if self._mid_line:
             print()
             self._mid_line = False
-        print(text)
+        print((self.stamp(event) if stamp and text else "") + text)
 
     def _end_thinking(self) -> None:
         """Close a thinking stream: reset the colour and end its line."""
@@ -109,39 +122,47 @@ class Printer:
             if not self._thinking:
                 if self._mid_line:
                     print()
-                print(self.paint(DIM, "[thinking]"))
+                print(self.stamp(event) + self.paint(DIM, "[thinking]"))
                 self._thinking = True
             print(self.paint(DIM, event.text), end="", flush=True)
             self._mid_line = not event.text.endswith("\n")
         elif isinstance(event, ev.TextDelta):
             self._end_thinking()
+            if not self._answering:
+                if self._mid_line:
+                    print()
+                print(self.stamp(event), end="")
+                self._answering = True
             print(event.text, end="", flush=True)
             self._mid_line = not event.text.endswith("\n")
         elif isinstance(event, ev.ToolStarted):
             summary = json.dumps(event.input, ensure_ascii=False)
-            self.line(self.paint(CYAN, f"> {event.name} {summary[:300]}"))
+            self.line(self.paint(CYAN, f"> {event.name} {summary[:300]}"), event)
         elif isinstance(event, ev.ToolFinished):
             first = event.content.strip().splitlines()[:6]
             code = RED if event.is_error else DIM
-            for row in first:
-                self.line(self.paint(code, f"  {row[:200]}"))
+            for index, row in enumerate(first):
+                self.line(self.paint(code, f"  {row[:200]}"), event, stamp=index == 0)
         elif isinstance(event, ev.HookBlocked):
-            self.line(self.paint(YELLOW, f"[{event.event} hook blocked] {event.reason[:600]}"))
+            self.line(
+                self.paint(YELLOW, f"[{event.event} hook blocked] {event.reason[:600]}"), event
+            )
         elif isinstance(event, ev.Notice):
             code = RED if event.level == "error" else YELLOW
-            self.line(self.paint(code, f"[{event.level}] {event.text}"))
+            self.line(self.paint(code, f"[{event.level}] {event.text}"), event)
         elif isinstance(event, ev.TodosUpdated):
-            self.line(format_todos(event.todos))
+            self.line(format_todos(event.todos), event)
         elif isinstance(event, ev.UsageUpdated):
             self.line(
                 self.paint(
                     DIM,
                     f"[ctx {event.context_fraction:.1%} | in {event.prompt_tokens:,} "
                     f"out {event.completion_tokens:,} cached {event.cached_tokens:,}]",
-                )
+                ),
+                event,
             )
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
-            self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"))
+            self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
 
 
 def format_todos(todos: list[dict[str, Any]]) -> str:

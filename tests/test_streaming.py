@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 from mwm_harness.streaming import StreamAssembler, parse_sse_line
@@ -140,10 +141,13 @@ def test_terminal_prints_thinking_dimmed_and_hides_it_after_think_off(capsys):
     out(ev.ReasoningDelta("step one"))
     out(ev.TextDelta("Answer."))
     printed = capsys.readouterr().out
-    assert printed == "[thinking]\nstep one\n[end thinking]\nAnswer."
+    stamp = r"\d\d:\d\d:\d\d "
+    assert re.fullmatch(
+        f"{stamp}\\[thinking\\]\nstep one\n\\[end thinking\\]\n{stamp}Answer\\.", printed
+    )
 
     run_command(None, {}, "/think off", out)
     capsys.readouterr()
     out(ev.ReasoningDelta("hidden"))
     out(ev.TextDelta("Visible."))
-    assert capsys.readouterr().out == "Visible."
+    assert re.fullmatch(f"{stamp}Visible\\.", capsys.readouterr().out)

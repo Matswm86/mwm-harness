@@ -228,6 +228,7 @@ canvas#gl:active{cursor:grabbing}
 .t.err .r{color:var(--alert)}
 .t pre{margin:4px 0 2px 14px;padding:6px 8px;background:#05080f;border-radius:5px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;color:var(--muted);font:11px/1.5 var(--mono)}
 .a{font:13px/1.55 var(--display);color:var(--text);word-break:break-word}
+#log>[data-ts]::before{content:attr(data-ts);display:block;font:10px/1.4 var(--mono);color:var(--faint);letter-spacing:.04em;margin-bottom:2px}
 .a>:first-child::before{content:"● ";font-family:var(--mono);color:var(--text)}
 .a p{margin:0 0 7px;white-space:pre-wrap} .a p:last-child{margin-bottom:0}
 .a code{font:11.5px var(--mono);color:var(--cyan)}
@@ -406,7 +407,10 @@ function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.
 const fmt = (n) => Number(n || 0).toLocaleString("en-US");
 const short = (n) => { n = Number(n || 0); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n); };
 function atBottom() { const l = $("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 80; }
-function add(node) { const stick = atBottom(); $("log").append(node); if (stick) $("log").scrollTop = $("log").scrollHeight; return node; }
+// Every log entry shows the local time of the event that made it (history keeps its original time).
+let stampTs = "";
+const stampClock = (ts) => { const d = ts ? new Date(ts) : new Date(); return isNaN(d) ? "" : d.toLocaleTimeString("en-GB", { hour12: false }); };
+function add(node) { if (!node.dataset.ts) node.dataset.ts = stampClock(stampTs); const stick = atBottom(); $("log").append(node); if (stick) $("log").scrollTop = $("log").scrollHeight; return node; }
 const baseName = (p) => String(p || "").split("/").pop();
 
 /* ---------------- loaders: three.js first (Monaco's AMD loader would capture it), then Monaco ---------------- */
@@ -812,14 +816,15 @@ function loadState(s) {
   $("sid").textContent = s.session_id.slice(0, 8); $("cwdname").textContent = baseName(s.cwd);
   turnCount = s.history.filter((m) => m.role === "user" && m.blocks.some((b) => b.type === "text")).length;
   bumpTurns(0);  // a replayed TurnStarted below counts the running turn
-  s.history.forEach((m) => m.blocks.forEach((b) => {
+  s.history.forEach((m) => { stampTs = m.ts || ""; m.blocks.forEach((b) => {
     if (b.type === "text" && m.role === "user") userMessage(b.text);
     else if (b.type === "text") { current = null; assistantText(b.text); current = null; }
     else if (b.type === "tool_use") toolStarted(b.id, b.name, b.input, false);
     else if (b.type === "tool_result") toolFinished(b.tool_use_id, b.content, !!b.is_error, false);
-  }));
+  }); });
   // A turn that was already running when this tab came on screen: replay what it has done so far.
-  (s.live || []).forEach((e) => { const h = handlers[e.type]; if (h && e.type !== "State") h(e); });
+  (s.live || []).forEach((e) => { const h = handlers[e.type]; stampTs = e.ts || ""; if (h && e.type !== "State") h(e); });
+  stampTs = s.ts || "";
   if (!s.history.length && !(s.live || []).length) add(el("div", "sys", "Ready. Ask, or / for commands."));
   setTouched(s.touched); $("treeroot").replaceChildren(); send({ type: "tree", path: "" });
   setTodos(s.todos); setPlan(s.plan); setMcp(s.mcp); setBusy(s.busy); setUsage(s.usage);
@@ -939,7 +944,7 @@ function connect() {
     const e = JSON.parse(m.data);
     if (e.type === "State" && !session) { session = e.tab || ""; renderSessions(); }
     if (e.tab && e.tab !== session && e.type !== "TabClosed") return;  // another tab: its badge shows it
-    const h = handlers[e.type]; if (h) h(e);
+    stampTs = e.ts || ""; const h = handlers[e.type]; if (h) h(e);
   };
   ws.onclose = () => { $("conn").textContent = "disconnected, retrying"; $("conn").className = "down";
     setTimeout(connect, retry); retry = Math.min(retry * 2, 8000); };

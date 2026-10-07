@@ -52,7 +52,7 @@ class Transcript:
             "type": message.role,
             "message": body,
             "uuid": entry_uuid,
-            "timestamp": _now(),
+            "timestamp": message.ts,
             "cwd": str(self.cwd),
             "sessionId": self.session_id,
             "version": f"mwm-harness/{__version__}",
@@ -117,7 +117,9 @@ def load_messages(path: Path) -> list[Message]:
         if entry.get("isCompactSummary"):
             messages = []  # everything before a compaction was replaced by its summary
         extra = {k: v for k, v in body.items() if k not in ("role", "content")}
-        messages.append(Message(entry["type"], content, bool(entry.get("isMeta")), extra))
+        message = Message(entry["type"], content, bool(entry.get("isMeta")), extra)
+        message.ts = entry.get("timestamp") or message.ts
+        messages.append(message)
     return repair_history(messages)
 
 

@@ -9,12 +9,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
+
+
+def now_stamp() -> str:
+    """UTC time to the millisecond, the stamp every event and message carries."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 @dataclass
 class Event:
-    pass
+    ts: str = field(default_factory=now_stamp, kw_only=True)
 
 
 @dataclass

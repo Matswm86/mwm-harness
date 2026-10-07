@@ -235,7 +235,7 @@ class Tab:
             "usage": self.usage(),
             # While a turn runs, its own messages come as ``live`` events instead.
             "history": [
-                {"role": m.role, "blocks": m.blocks()}
+                {"role": m.role, "blocks": m.blocks(), "ts": m.ts}
                 for m in (session.messages[: self.turn_base] if self.live else session.messages)
                 if not m.is_meta
             ],
@@ -899,7 +899,9 @@ def create_app(
 
         async def pump() -> None:
             while True:
-                await websocket.send_json(await queue.get())
+                payload = await queue.get()
+                payload.setdefault("ts", ev.now_stamp())  # panel-made replies carry a time too
+                await websocket.send_json(payload)
 
         sender = asyncio.create_task(pump())
         try:
