@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from mwm_harness import events as ev
+from mwm_harness import postmortem
 from mwm_harness.config import ModelSpec
 from mwm_harness.jev import format_report, report
 from mwm_harness.loop import Session
@@ -43,12 +44,48 @@ HELP = """\
 /open PATH            show a project file with line numbers
 /agents               subagents the model can start with the Task tool
 /jev                  Jev's decision log: calls, known outcomes, hit rate per domain
+/postmortem [draft] [ID]  which harness layer failed this session (or session ID); draft = model writes one fix as a draft
 /compact [focus]      replace the history with a summary written by the model
 /init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
 /tab [new [DIR]|N|close [N]]  sessions in this terminal: list, open one (same model), switch, close
 /clear                forget the conversation (the transcript file is kept)
 /quit                 leave"""
+
+
+def run_postmortem(session: Session, argument: str, out: Printer) -> bool | str:
+    """Write the layer report for this session or an earlier one; ``draft`` asks the model for one fix."""
+    words = argument.split()
+    draft = "draft" in words
+    wanted = next((w for w in words if w != "draft"), "")
+    if wanted:
+        matches = [p for p in list_sessions(session.cwd) if p.stem.startswith(wanted)]
+        if len(matches) != 1:
+            out.line(f"{len(matches)} sessions match {wanted!r}; give a longer ID (see /resume)")
+            return True
+        path = matches[0]
+    else:
+        path = session.transcript.path
+    if not path.is_file():
+        out.line("this session has no transcript yet")
+        return True
+    report = postmortem.analyze(path)
+    target = postmortem.write(report)
+    ranked = report.ranked()
+    out.line(
+        f"postmortem: {report.turns} turns, {report.tool_calls} tool calls, "
+        f"{sum(f.count for f in ranked)} failures in {len(ranked)} classes -> {target}"
+    )
+    for finding in ranked[:5]:
+        out.line(f"  {finding.layer:<13} {finding.count:>3}x  {finding.kind}", stamp=False)
+    if not draft:
+        return True
+    if not ranked:
+        out.line("nothing failed, so there is no fix to draft")
+        return True
+    return postmortem.DRAFT_PROMPT.format(
+        report=target, draft=target.with_name(f"{target.stem}.draft.md")
+    )
 
 
 INIT_PROMPT = """\
@@ -83,6 +120,7 @@ class Printer:
         self._mid_line = False
         self._thinking = False
         self._answering = False  # inside a stamped answer block
+        self._tool_started: dict[str, str] = {}  # tool_use_id -> ts of its ToolStarted
 
     def paint(self, code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if self.color else text
@@ -136,11 +174,17 @@ class Printer:
             print(event.text, end="", flush=True)
             self._mid_line = not event.text.endswith("\n")
         elif isinstance(event, ev.ToolStarted):
+            self._tool_started[event.tool_use_id] = event.ts
             summary = json.dumps(event.input, ensure_ascii=False)
             self.line(self.paint(CYAN, f"> {event.name} {summary[:300]}"), event)
         elif isinstance(event, ev.ToolFinished):
-            first = event.content.strip().splitlines()[:6]
+            first = event.content.strip().splitlines()[:6] or ["(empty)"]
             code = RED if event.is_error else DIM
+            took = postmortem.seconds_between(
+                self._tool_started.pop(event.tool_use_id, ""), event.ts
+            )
+            if took is not None:
+                first[0] = f"{first[0][:180]}  ({took:.1f}s)"
             for index, row in enumerate(first):
                 self.line(self.paint(code, f"  {row[:200]}"), event, stamp=index == 0)
         elif isinstance(event, ev.HookBlocked):
@@ -257,6 +301,8 @@ def run_command(
         for row in session.system_prompt.splitlines():
             if row.startswith(("# Rules from", "# Memory index")):
                 out.line(f"  {row[2:]}")
+    elif name == "/postmortem":
+        return run_postmortem(session, argument, out)
     elif name == "/resume":
         for path in list_sessions(session.cwd)[:15]:
             out.line(f"  {path.stem}  ({path.stat().st_size:,} bytes)")

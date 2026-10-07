@@ -228,6 +228,7 @@ canvas#gl:active{cursor:grabbing}
 .t.err .r{color:var(--alert)}
 .t pre{margin:4px 0 2px 14px;padding:6px 8px;background:#05080f;border-radius:5px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;color:var(--muted);font:11px/1.5 var(--mono)}
 .a{font:13px/1.55 var(--display);color:var(--text);word-break:break-word}
+.t .dur{margin-left:8px;font:10px var(--mono);color:var(--faint)}.t .dur.slow{color:var(--gold)}
 #log>[data-ts]::before{content:attr(data-ts);display:block;font:10px/1.4 var(--mono);color:var(--faint);letter-spacing:.04em;margin-bottom:2px}
 .a>:first-child::before{content:"● ";font-family:var(--mono);color:var(--text)}
 .a p{margin:0 0 7px;white-space:pre-wrap} .a p:last-child{margin-bottom:0}
@@ -656,7 +657,7 @@ function toolStarted(id, name, input, live) {
   const card = el("details", "t run"), sum = el("summary");
   sum.append(el("b", null, displayName(name)), el("span", "arg", `(${brief(input)})`), el("span", "r", "running"));
   card.append(sum, el("pre", null, JSON.stringify(input, null, 2)));
-  tools.set(id, { card, name, input }); add(card);
+  tools.set(id, { card, name, input, started: stampTs }); add(card);
   if (live) {
     if (turn && turn.tools !== null) turn.tools++;
     if (/^(Write|Edit|MultiEdit)$/.test(name) && input && !approvals.length) showChange("live:" + id, input.file_path || input.path || name, changeRows(name, input), true);
@@ -671,6 +672,8 @@ function toolFinished(id, content, isError, live) {
   const lines = text.split("\n").length;
   t.card.querySelector(".r").textContent = isError ? first : lines > 1 ? `${first}  (+${lines - 1} lines)` : first;
   const pre = el("pre", null, text); t.card.append(pre);
+  const took = (Date.parse(stampTs) - Date.parse(t.started)) / 1000;  // how long the call ran
+  if (took >= 0) t.card.querySelector("summary").append(el("span", "dur" + (took >= 30 ? " slow" : ""), took < 10 ? `${took.toFixed(1)}s` : `${Math.round(took)}s`));
   if (live) {
     if (turn && isError) turn.errors++;
     if (turn && !isError && /^(Write|Edit|MultiEdit)$/.test(t.name) && t.input) turn.files.add(t.input.file_path || t.input.path);
