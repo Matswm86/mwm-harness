@@ -95,6 +95,11 @@ class StreamAssembler:
                 arguments if isinstance(arguments, str) else json.dumps(arguments)
             )
 
+    def call_head(self, index: int) -> tuple[str, str]:
+        """The id and name seen so far for the call at ``index`` (empty strings until sent)."""
+        call = self._calls.get(index)
+        return (call.id, call.name) if call else ("", "")
+
     def finish(self) -> AssembledTurn:
         calls = [self._finish_call(index, self._calls[index]) for index in sorted(self._calls)]
         return AssembledTurn(

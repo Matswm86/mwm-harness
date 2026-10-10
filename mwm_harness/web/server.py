@@ -53,6 +53,7 @@ QUIET_EVENTS = (ev.HookContext,)  # large and only useful in the transcript
 LIVE_EVENTS = (
     ev.TextDelta,
     ev.ReasoningDelta,
+    ev.ToolArgsDelta,
     ev.ToolStarted,
     ev.ToolFinished,
     ev.Notice,
@@ -197,6 +198,14 @@ class Tab:
                 and last["type"] == payload["type"]
             ):
                 last["text"] += payload["text"]  # one entry per streamed block, not per chunk
+            elif (
+                isinstance(event, ev.ToolArgsDelta)
+                and last["type"] == payload["type"]
+                and last["index"] == payload["index"]
+            ):
+                last["fragment"] += payload["fragment"]  # one entry per call being written
+                last["call_id"] = last["call_id"] or payload["call_id"]
+                last["name"] = last["name"] or payload["name"]
             elif len(self.live) < MAX_LIVE_EVENTS:
                 self.live.append(payload)
         if isinstance(event, ev.Compacted):

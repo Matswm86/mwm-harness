@@ -39,6 +39,20 @@ class ReasoningDelta(Event):
 
 
 @dataclass
+class ToolArgsDelta(Event):
+    """A piece of a tool call's JSON arguments, sent while the model is still writing them.
+
+    ``index`` names the call within this model reply (parallel calls interleave);
+    ``call_id`` and ``name`` are empty until the provider has sent them.
+    """
+
+    index: int
+    call_id: str
+    name: str
+    fragment: str
+
+
+@dataclass
 class ToolStarted(Event):
     tool_use_id: str
     name: str

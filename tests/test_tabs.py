@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from mwm_harness.providers import chunks_for
 from mwm_harness.web.server import create_app
 from starlette.testclient import TestClient
@@ -139,6 +141,10 @@ def test_switching_to_a_tab_mid_turn_replays_the_running_turn(make_session):
             e["ts"].endswith("Z") for e in state["live"]
         )  # every replayed event keeps its time
         assert "ToolStarted" in kinds
+        # The streamed arguments replay as one entry per call, so the code pane can redraw it.
+        args = [e for e in state["live"] if e["type"] == "ToolArgsDelta"]
+        assert len(args) == 1 and args[0]["name"] == "Write"
+        assert json.loads(args[0]["fragment"]) == {"file_path": "a.txt", "content": "1"}
         ws.send_json({"type": "cancel", "tab": "t1"})
         until(ws, "TurnEnded", "t1")
         ws.send_json({"type": "state", "tab": "t1"})

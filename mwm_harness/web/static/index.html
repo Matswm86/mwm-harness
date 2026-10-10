@@ -182,6 +182,8 @@ canvas#gl:active{cursor:grabbing}
 .src div.add{background:rgba(110,231,168,.07)} .src div.add>u{color:var(--ok)}
 .src div.del{background:rgba(255,107,91,.07)} .src div.del>u{color:var(--alert)}
 .src div.hunk{color:var(--violet);background:rgba(185,162,255,.06)}
+.src div.caret>span::after{content:"";display:inline-block;width:.55em;height:1.1em;margin-left:1px;vertical-align:text-bottom;background:var(--cyan);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
 .src .kw{color:#c7a6ff} .src .st{color:#ffd28a} .src .cm{color:var(--faint);font-style:italic} .src .nm{color:#ffb37a}
 .code footer{display:flex;gap:12px;justify-content:space-between;padding:6px 12px;border-top:1px solid var(--line);font:10.5px var(--mono);color:var(--muted)}
 .code .seg button{padding:2px 8px;font-size:11px}
@@ -531,6 +533,68 @@ function showChange(key, title, rows, live) {
   setLive(live, live ? `writing ${baseName(title)}` : `proposed change · ${baseName(title)}`);
   const adds = rows.filter((r) => r[3] === "add").length, dels = rows.filter((r) => r[3] === "del").length;
   $("cstat").textContent = `${title} · +${adds} −${dels}`;
+}
+/* Live code: tool-call arguments arrive as JSON fragments while the model writes them.
+   The pane shows the file text decoded so far, redrawn at most 20 times a second. */
+const streaming = new Map();   // call index -> {raw, name, id}
+let streamTimer = 0;
+function partialStrings(raw, key) {
+  // Every value of "key" in a JSON text that may stop mid-string; a cut escape is dropped.
+  const out = [], re = new RegExp(`"${key}"\\s*:\\s*"`, "g"), esc = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" };
+  let m;
+  while ((m = re.exec(raw))) {
+    let i = m.index + m[0].length, text = "", done = false;
+    while (i < raw.length) {
+      const c = raw[i];
+      if (c === '"') { done = true; break; }
+      if (c === "\\") {
+        if (i + 1 >= raw.length) break;
+        const n = raw[i + 1];
+        if (n === "u") { if (i + 6 > raw.length) break; text += String.fromCharCode(parseInt(raw.slice(i + 2, i + 6), 16)); i += 6; continue; }
+        text += esc[n] ?? n; i += 2; continue;
+      }
+      text += c; i++;
+    }
+    out.push(text); re.lastIndex = i; if (!done) break;
+  }
+  return out;
+}
+function streamRows(name, raw) {
+  const path = partialStrings(raw, "file_path")[0] || partialStrings(raw, "path")[0] || "";
+  if (name === "Write") {
+    const content = partialStrings(raw, "content")[0];
+    return { path, rows: changeRows("Write", { file_path: path, content: content ?? "" }) };
+  }
+  const olds = partialStrings(raw, "old_string"), news = partialStrings(raw, "new_string");
+  const edits = olds.map((o, k) => ({ old_string: o, new_string: news[k] ?? "" }));
+  return { path, rows: changeRows(name === "MultiEdit" ? "MultiEdit" : "Edit", { file_path: path, edits, ...(edits[0] || {}) }) };
+}
+function argsDelta(e) {
+  const c = streaming.get(e.index) || { raw: "", name: "", id: "" };
+  c.raw += e.fragment; c.name = c.name || e.name; c.id = c.id || e.call_id; streaming.set(e.index, c);
+  if (!streamTimer) streamTimer = setTimeout(drawStreams, 50);
+}
+function drawStreams() {
+  streamTimer = 0;
+  if (approvals.length) return;               // the approval diff owns the pane
+  for (const [index, c] of streaming) {
+    if (!/^(Write|Edit|MultiEdit)$/.test(c.name)) continue;
+    const { path, rows } = streamRows(c.name, c.raw);
+    const key = "stream:" + index, title = path || c.name;
+    if (activeFile && activeFile !== key && !activeFile.startsWith("stream:") && !activeFile.startsWith("live:") && openFiles.get(activeFile)?.kind === "file") continue;  // Mats is reading a file: do not yank the view
+    showChange(key, title, rows, true);
+    const lines = rows.filter((r) => r[3] === "add").length;
+    setLive(true, `writing ${baseName(title)} · ${lines} line${lines === 1 ? "" : "s"}`);
+    const pre = $("viewer").querySelector("pre.src"), last = pre && pre.lastElementChild;
+    if (last) { last.classList.add("caret"); pre.parentElement.scrollTop = pre.parentElement.scrollHeight; }
+    if (scene && path && !c.shown) { c.shown = true; scene.toolStarted(key, c.name, { file_path: path }); }
+  }
+}
+function endStreams() {
+  // The finished call takes over (ToolStarted shows its full change), so drop the partial views.
+  clearTimeout(streamTimer); streamTimer = 0;
+  for (const index of streaming.keys()) { openFiles.delete("stream:" + index); if (scene) scene.toolFinished("stream:" + index); }
+  streaming.clear(); renderFileTabs();
 }
 function setLive(on, text) { const s = $("cstate"); s.className = on ? "live" : "live still"; s.textContent = text; }
 function renderFileTabs() {
@@ -889,10 +953,11 @@ function bumpTurns(by = 1) {
 
 const handlers = {
   State: loadState,
-  TurnStarted: (e) => { setBusy(true); bumpTurns(); turn = { prompt: e.prompt, tools: 0, errors: 0, files: new Set() }; userMessage(e.prompt); drawAgents(); },
+  TurnStarted: (e) => { endStreams(); setBusy(true); bumpTurns(); turn = { prompt: e.prompt, tools: 0, errors: 0, files: new Set() }; userMessage(e.prompt); drawAgents(); },
   TextDelta: (e) => { reasoning = null; assistantText(e.text); },
   ReasoningDelta: (e) => reasoningText(e.text),
-  ToolStarted: (e) => toolStarted(e.tool_use_id, e.name, e.input, true),
+  ToolArgsDelta: argsDelta,
+  ToolStarted: (e) => { if (streaming.size) endStreams(); toolStarted(e.tool_use_id, e.name, e.input, true); },
   ToolFinished: (e) => toolFinished(e.tool_use_id, e.content, e.is_error, true),
   HookBlocked: (e) => note("block", `[${e.event} hook blocked] ${e.reason}`),
   Notice: (e) => note(e.level, e.text),
@@ -910,7 +975,7 @@ const handlers = {
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; if (state) state.mode = e.mode; if (scene) scene.setCore(); },
   ModelChanged: (e) => { $("model").value = e.model; if (state) state.model = e.model; if (scene) scene.setCore(); },
-  TurnEnded: (e) => { setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); if (e.reason === "done") speakAnswer(e.text); },
+  TurnEnded: (e) => { if (streaming.size) endStreams(); setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); if (e.reason === "done") speakAnswer(e.text); },
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
   ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
   CommandOutput: (e) => { current = null; add(el("pre", "cmdout", `${e.command}\n${e.text}`)); },
@@ -950,7 +1015,7 @@ function renderSessions() {
 }
 function switchTo(id) {
   if (!id || id === session) return;  // re-drawing here would eat the second click of a rename
-  session = id; openFiles.clear(); activeFile = ""; showFile("");
+  session = id; streaming.clear(); openFiles.clear(); activeFile = ""; showFile("");
   // Mark the tab in place: rebuilding the strip here would swallow the second click of a rename.
   document.querySelectorAll(".stab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.id === id)));
   send({ type: "state" });

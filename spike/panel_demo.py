@@ -10,6 +10,7 @@ by itself at startup, so a page that opens later shows the pending approval.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -38,24 +39,65 @@ def todos(*states: str) -> dict:
     }
 
 
+REPORT = """\"\"\"Summarise parsed items for the daily report.\"\"\"
+
+from collections import Counter
+
+
+def parse(items):
+    return list(items)
+
+
+def summarise(items):
+    parsed = parse(items)
+    counts = Counter(kind for kind, _ in parsed)
+    lines = [f"{kind:<10} {count:>4}" for kind, count in counts.most_common()]
+    total = sum(counts.values())
+    lines.append(f"{'total':<10} {total:>4}")
+    return "\\n".join(lines)
+
+
+if __name__ == "__main__":
+    print(summarise([("fill", 1), ("cancel", 2), ("fill", 3)]))
+"""
+
+
+def streamed_write(path: str, content: str, size: int = 24) -> list:
+    """A Write call sent as many small argument fragments, so the panel types it out live."""
+    raw = json.dumps({"file_path": path, "content": content})
+    pieces = [raw[i : i + size] for i in range(0, len(raw), size)]
+    chunks = []
+    for n, piece in enumerate(pieces):
+        head = {"id": f"call_w{n}", "function": {"name": "Write"}} if n == 0 else {"function": {}}
+        head["function"]["arguments"] = piece
+        chunks.append({"choices": [{"delta": {"tool_calls": [{"index": 0, **head}]}}]})
+    chunks.append({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+    chunks.append({"choices": [], "usage": {"prompt_tokens": 900, "completion_tokens": 300}})
+    return chunks
+
+
+class PacedProvider(ScriptedProvider):
+    """The scripted provider with a pause between chunks, like a real model streaming."""
+
+    async def stream(self, spec, system, messages, tools):
+        async for chunk in super().stream(spec, system, messages, tools):
+            await asyncio.sleep(PACE)
+            yield chunk
+
+
+PACE = float(os.environ.get("PANEL_DEMO_PACE", "0.06"))
+
+
 def script() -> list:
     one_round = [
         chunks_for(tool_calls=[("TodoWrite", todos("in_progress", "pending", "pending"))]),
         chunks_for(tool_calls=[("Glob", {"pattern": "*.py"})]),
         chunks_for(tool_calls=[("TodoWrite", todos("completed", "in_progress", "pending"))]),
         chunks_for(
-            "The loop stops one item early. I will write the fix:\n\n```python\n"
-            "for index in range(len(items)):\n    handle(items[index])\n```\n",
-            tool_calls=[
-                (
-                    "Write",
-                    {
-                        "file_path": "parse.py",
-                        "content": "def parse(items):\n    return list(items)\n",
-                    },
-                )
-            ],
-        ),
+            "The loop stops one item early. I will write the fix and a report helper:\n\n"
+            "```python\nfor index in range(len(items)):\n    handle(items[index])\n```\n"
+        )[:-2]
+        + streamed_write("report.py", REPORT),
         chunks_for(tool_calls=[("TodoWrite", todos("completed", "completed", "in_progress"))]),
         chunks_for(tool_calls=[("TodoWrite", todos("completed", "completed", "completed"))]),
         chunks_for("Fixed `parse()` and the suite is green: 3 of 3 tasks done."),
@@ -71,7 +113,7 @@ async def main(port: int) -> None:
         session = Session(
             cwd=project,
             model=MODELS["scripted-qwen"],
-            provider=ScriptedProvider(script()),
+            provider=PacedProvider(script()),
             # the chart reads the same credentials file as a real session
             settings=Settings(sandbox="off", chart_env_file=load_settings().chart_env_file),
             hook_settings=[],

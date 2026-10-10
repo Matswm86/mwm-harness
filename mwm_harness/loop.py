@@ -594,6 +594,15 @@ class Session:
                 thinking = delta.get("reasoning_content") or delta.get("reasoning")
                 if thinking:
                     self.bus.emit(ev.ReasoningDelta(thinking))
+                for fragment in delta.get("tool_calls") or []:
+                    arguments = (fragment.get("function") or {}).get("arguments")
+                    if not arguments:
+                        continue
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments)
+                    index = fragment.get("index", 0)
+                    call_id, name = assembler.call_head(index)
+                    self.bus.emit(ev.ToolArgsDelta(index, call_id, name, arguments))
 
     # ------------------------------------------------------------------ tools
 
