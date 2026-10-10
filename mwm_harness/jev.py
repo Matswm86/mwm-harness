@@ -614,9 +614,7 @@ def _workspace_sonnet() -> Callable[[str, str], str | None]:
         raise JevError(f"no Sonnet path: {exc}") from exc
 
     def call(system: str, prompt: str) -> str | None:
-        return call_claude_cli(
-            model=SONNET_MODEL, system_prompt=system, user_prompt=prompt, timeout=180
-        )
+        return call_claude_cli(model=SONNET_MODEL, system_prompt=system, user_prompt=prompt)
 
     return call
 
