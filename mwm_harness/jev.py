@@ -14,11 +14,18 @@ API reference read 2026-09-20: POST https://api.typesafe.ai/v1/systemone,
 ``Authorization: Bearer``, body ``{state, model, questions}``; 401 bad key,
 422 bad request, 429 rate limit, 529 overloaded.
 
-Calls made up only of ``choice`` questions go to Cloudflare's Clef (Workers AI,
-same request shape) when Cloudflare credentials are set: on the 2026-10-04
-bake-off it routed 94% of 50 chunks right against Jev's 86%. Yes/no and score
-questions stay on Jev, which had the better Brier score (0.292 vs 0.400). A
-failed Clef call is logged and the question is retried on Jev.
+Which model answers (``model="auto"``), per the 2026-10-10 bake-off scored
+against Sonnet 5.5 labels:
+
+- The brain-routing question (one choice over the five collections in
+  ``ROUTE_KEYS``) goes to the local fine-tuned 4B in Ollama: 0.920 on n=200
+  against Clef 0.885 and Jev 0.850. If Ollama fails, the call is logged and
+  retried on Clef, else Jev.
+- Every other question goes to Jev: it beat Clef on passage relevance (0.688
+  vs 0.647, n=400) and on answer checks (0.733 vs 0.633, n=150). Yes/no and
+  score questions were not re-tested and stay on Jev.
+
+Clef is used only when a caller asks for it by name.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -50,6 +58,11 @@ CLEF_DEFAULT = "clef"
 CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
 CF_TOKEN_ENV = "CLOUDFLARE_API_TOKEN"
 CF_ACCOUNT_ENV = "CLOUDFLARE_ACCOUNT_ID"
+ROUTE_KEYS = ("codebase", "creative_writing", "research", "science_writing", "textbooks")
+ROUTE_MODEL_ENV = "MWM_JEV_ROUTE_MODEL"
+ROUTE_MODEL_DEFAULT = "routing-4b-ft-q4km"
+OLLAMA_URL = "http://localhost:11434/api/chat"
+LETTERS = "ABCDE"
 RETRY_STATUSES = (429, 529)
 QUESTION_TYPES = ("noul", "choice", "score")
 STATE_PREVIEW_CHARS = 400
@@ -88,6 +101,24 @@ def check_questions(questions: Any) -> str | None:
         if kind == "score" and not (isinstance(criteria, list) and 2 <= len(criteria) <= 10):
             return f"question {name!r}: a score needs criteria = [level descriptions], 2-10"
     return None
+
+
+def is_route_question(questions: dict[str, Any]) -> bool:
+    """True for one choice question over exactly the five brain collections."""
+    if len(questions) != 1:
+        return False
+    (question,) = questions.values()
+    criteria = question.get("criteria")
+    return (
+        question.get("type") == "choice"
+        and isinstance(criteria, dict)
+        and set(criteria) == set(ROUTE_KEYS)
+    )
+
+
+def route_model() -> str:
+    """The Ollama model for routing; MWM_JEV_ROUTE_MODEL overrides it, an empty value sends routing to Jev."""
+    return os.environ.get(ROUTE_MODEL_ENV, ROUTE_MODEL_DEFAULT)
 
 
 def decision_of(answer: dict[str, Any]) -> Any:
@@ -321,8 +352,8 @@ class JevClient:
     ) -> Verdict:
         """Ask, log, return. A failed call is logged too and raises JevError.
 
-        ``model="auto"`` sends choice-only calls to Clef when Cloudflare
-        credentials exist and everything else to Jev.
+        ``model="auto"`` sends the brain-routing question to the local
+        routing model and everything else to Jev (see the module docstring).
         """
         problem = check_questions(questions)
         if problem:
@@ -331,19 +362,23 @@ class JevClient:
             raise JevError("state is empty: Jev needs the thing to judge")
         auto = model == AUTO_MODEL
         if auto:
-            only_choice = all(q.get("type") == "choice" for q in questions.values())
-            model = CLEF_DEFAULT if only_choice and self._cloudflare() else DEFAULT_MODEL
+            model = route_model() if is_route_question(questions) else DEFAULT_MODEL
+            model = model or DEFAULT_MODEL
         body = {"state": state, "model": model, "questions": questions}
         try:
-            if model in CLEF_MODELS:
+            if auto and model != DEFAULT_MODEL:
                 try:
-                    verdict = await self._post_clef(body)
+                    verdict = await self._post_ollama_route(body)
                 except JevError as exc:
-                    if not auto:
-                        raise
-                    self.log.failure(f"{exc}; retried on Jev", domain, label, caller)
-                    body["model"] = DEFAULT_MODEL
-                    verdict = await self._post(body)
+                    fallback = CLEF_DEFAULT if self._cloudflare() else DEFAULT_MODEL
+                    self.log.failure(f"{exc}; retried on {fallback}", domain, label, caller)
+                    body["model"] = fallback
+                    if fallback == CLEF_DEFAULT:
+                        verdict = await self._post_clef(body)
+                    else:
+                        verdict = await self._post(body)
+            elif model in CLEF_MODELS:
+                verdict = await self._post_clef(body)
             else:
                 verdict = await self._post(body)
         except JevError as exc:
@@ -351,6 +386,52 @@ class JevClient:
             raise
         self.log.decision(verdict, state, questions, domain, label, caller)
         return verdict
+
+    async def _post_ollama_route(self, body: dict[str, Any]) -> Verdict:
+        """Ask the local routing model for the option letter; probabilities come from its first-token logprobs."""
+        ((name, question),) = body["questions"].items()
+        criteria = question["criteria"]
+        opts = "\n".join(f"{LETTERS[i]}. {criteria[k]}" for i, k in enumerate(ROUTE_KEYS))
+        prompt = (
+            f"Text chunk:\n<<<\n{str(body['state'])[:1500]}\n>>>\n\n"
+            f"Which knowledge-base collection does this text chunk belong in?\n{opts}\n\n"
+            "Reply with exactly one letter."
+        )
+        request = {
+            "model": body["model"],
+            "stream": False,
+            "logprobs": True,
+            "top_logprobs": 20,
+            "options": {"temperature": 0, "num_predict": 1},
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.post(OLLAMA_URL, json=request)
+            response.raise_for_status()
+            tops = response.json()["logprobs"][0]["top_logprobs"]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise JevError(f"local routing model failed: {type(exc).__name__}: {exc}") from exc
+        raw = {k: 0.0 for k in ROUTE_KEYS}
+        for top in tops:
+            letter = str(top.get("token", "")).strip().upper()
+            if letter and letter in LETTERS:
+                raw[ROUTE_KEYS[LETTERS.index(letter)]] += math.exp(float(top["logprob"]))
+        total = sum(raw.values())
+        if not total:
+            raise JevError("local routing model answered without an option letter")
+        probs = {k: v / total for k, v in raw.items()}
+        choice = max(probs, key=probs.get)
+        return Verdict(
+            id=uuid.uuid4().hex[:12],
+            answers={name: {"type": "choice", "choice": choice, "probabilities": probs}},
+            model=body["model"],
+            usage={},
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
 
     def _cloudflare(self) -> tuple[str, str] | None:
         """(account id, token) for Workers AI, or None when either is missing."""

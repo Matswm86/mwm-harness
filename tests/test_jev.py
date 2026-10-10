@@ -161,15 +161,11 @@ def clef_ok():
     return (200, {"success": True, "result": result, "errors": []})
 
 
-def test_choice_only_calls_go_to_clef_when_cloudflare_is_set(tmp_path):
+def test_choice_only_calls_go_to_jev_even_with_cloudflare(tmp_path):
     seen = []
-    client, log = make_client(tmp_path, [clef_ok()], seen, cloudflare=CF)
-    verdict = asyncio.run(client.ask("a", CHOICE_ONLY, domain="brain"))
-    assert str(seen[0].url) == jev.CLEF_URL.format(account="acct-1", model="clef")
-    assert seen[0].headers["authorization"] == "Bearer cf-test"
-    assert json.loads(seen[0].content)["model"] == "clef"
-    assert verdict.model == "clef" and verdict.decisions() == {"kind": "trading"}
-    assert [r["kind"] for r in log.records()] == ["decision"]
+    client, _ = make_client(tmp_path, [ok({"kind": ANSWERS["kind"]})], seen, cloudflare=CF)
+    asyncio.run(client.ask("a", CHOICE_ONLY, domain="brain"))
+    assert seen[0].url == jev.API_URL
 
 
 def test_mixed_questions_stay_on_jev_even_with_cloudflare(tmp_path):
@@ -179,23 +175,88 @@ def test_mixed_questions_stay_on_jev_even_with_cloudflare(tmp_path):
     assert seen[0].url == jev.API_URL
 
 
-def test_choice_only_without_cloudflare_uses_jev(tmp_path):
+def test_an_explicit_clef_model_goes_to_cloudflare(tmp_path):
     seen = []
-    client, _ = make_client(tmp_path, [ok({"kind": ANSWERS["kind"]})], seen)
-    asyncio.run(client.ask("a", CHOICE_ONLY))
+    client, log = make_client(tmp_path, [clef_ok()], seen, cloudflare=CF)
+    verdict = asyncio.run(client.ask("a", CHOICE_ONLY, domain="brain", model="clef"))
+    assert str(seen[0].url) == jev.CLEF_URL.format(account="acct-1", model="clef")
+    assert seen[0].headers["authorization"] == "Bearer cf-test"
+    assert verdict.model == "clef" and verdict.decisions() == {"kind": "trading"}
+    assert [r["kind"] for r in log.records()] == ["decision"]
+
+
+ROUTE = {
+    "route": {
+        "type": "choice",
+        "instructions": "Which knowledge-base collection does this text chunk belong in?",
+        "criteria": {k: f"{k} text" for k in jev.ROUTE_KEYS},
+    }
+}
+
+
+def ollama_ok(letter="D"):
+    tops = [{"token": letter, "logprob": -0.1}, {"token": "B", "logprob": -2.5}]
+    return (
+        200,
+        {"message": {"content": letter}, "logprobs": [{"token": letter, "top_logprobs": tops}]},
+    )
+
+
+def test_the_routing_question_goes_to_the_local_model(tmp_path, monkeypatch):
+    monkeypatch.delenv(jev.ROUTE_MODEL_ENV, raising=False)
+    seen = []
+    client, log = make_client(tmp_path, [ollama_ok("D")], seen, cloudflare=CF)
+    verdict = asyncio.run(client.ask("a chunk about physics", ROUTE, domain="brain"))
+    assert str(seen[0].url) == jev.OLLAMA_URL
+    body = json.loads(seen[0].content)
+    assert (
+        body["model"] == jev.ROUTE_MODEL_DEFAULT
+        and "D. science_writing text" in body["messages"][0]["content"]
+    )
+    assert verdict.model == jev.ROUTE_MODEL_DEFAULT
+    assert verdict.decisions() == {"route": "science_writing"}
+    probs = verdict.answers["route"]["probabilities"]
+    assert abs(sum(probs.values()) - 1) < 1e-9 and probs["science_writing"] > 0.9
+    assert [r["kind"] for r in log.records()] == ["decision"]
+
+
+def test_a_failed_local_route_is_logged_and_retried_on_clef(tmp_path, monkeypatch):
+    monkeypatch.delenv(jev.ROUTE_MODEL_ENV, raising=False)
+    answer = {"route": {"type": "choice", "choice": "research", "probabilities": {}}}
+    result = {"model": "clef", "answers": answer, "usage": {}}
+    seen = []
+    client, log = make_client(
+        tmp_path, [(500, {"error": "busy"}), (200, {"success": True, "result": result})], seen, CF
+    )
+    verdict = asyncio.run(client.ask("a", ROUTE))
+    assert "cloudflare" in str(seen[1].url) and verdict.decisions() == {"route": "research"}
+    kinds = [r["kind"] for r in log.records()]
+    assert kinds == ["failure", "decision"] and "retried on clef" in log.records()[0]["error"]
+
+
+def test_a_failed_local_route_without_cloudflare_falls_back_to_jev(tmp_path, monkeypatch):
+    monkeypatch.delenv(jev.ROUTE_MODEL_ENV, raising=False)
+    answer = {"route": {"type": "choice", "choice": "codebase", "probabilities": {}}}
+    seen = []
+    client, log = make_client(tmp_path, [(200, {"logprobs": []}), ok(answer)], seen)
+    verdict = asyncio.run(client.ask("a", ROUTE))
+    assert seen[1].url == jev.API_URL and verdict.decisions() == {"route": "codebase"}
+    assert [r["kind"] for r in log.records()] == ["failure", "decision"]
+
+
+def test_an_empty_route_model_setting_sends_routing_to_jev(tmp_path, monkeypatch):
+    monkeypatch.setenv(jev.ROUTE_MODEL_ENV, "")
+    answer = {"route": {"type": "choice", "choice": "codebase", "probabilities": {}}}
+    seen = []
+    client, _ = make_client(tmp_path, [ok(answer)], seen)
+    asyncio.run(client.ask("a", ROUTE))
     assert seen[0].url == jev.API_URL
 
 
-def test_a_failed_clef_call_is_logged_and_retried_on_jev(tmp_path):
-    seen = []
-    client, log = make_client(
-        tmp_path, [(401, {"success": False}), ok({"kind": ANSWERS["kind"]})], seen, CF
-    )
-    verdict = asyncio.run(client.ask("a", CHOICE_ONLY))
-    assert seen[1].url == jev.API_URL and json.loads(seen[1].content)["model"] == jev.DEFAULT_MODEL
-    assert verdict.model == "jev-1.13.0"
-    kinds = [r["kind"] for r in log.records()]
-    assert kinds == ["failure", "decision"] and "retried on Jev" in log.records()[0]["error"]
+def test_a_choice_over_other_options_is_not_the_routing_question():
+    assert not jev.is_route_question(CHOICE_ONLY)
+    assert not jev.is_route_question({**ROUTE, "x": QUESTIONS["is_setup"]})
+    assert jev.is_route_question(ROUTE)
 
 
 def test_an_explicit_clef_model_does_not_fall_back(tmp_path):
