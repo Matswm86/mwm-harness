@@ -210,6 +210,8 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
 .lineinfo .x{position:absolute;right:8px;top:6px}
 .result ul.trace{display:block;margin:0;padding:0;list-style:none;font:11.5px/1.6 var(--mono)} .result ul.trace li{display:block;cursor:pointer;white-space:pre;overflow:hidden;text-overflow:ellipsis;padding:0 4px;border:0}
 .trace li:hover{background:rgba(255,255,255,.04)} .trace li.chg b{color:var(--cyan)} .trace li small{color:var(--muted)} .trace li em{font-style:normal;color:var(--gold)}
+.stopall{all:unset;cursor:pointer;padding:2px 9px;border:1px solid var(--alert);border-radius:5px;color:var(--alert);font:600 10.5px var(--mono);letter-spacing:.08em}
+.stopall:hover,.stopall:focus-visible{background:var(--alert);color:#0a0d14}
 .verdict-tag{padding:1px 7px;border-radius:4px;font-weight:600;letter-spacing:.06em}
 .verdict-tag.pass{background:rgba(110,231,168,.15);color:var(--ok)} .verdict-tag.kill{background:rgba(255,107,91,.15);color:var(--alert)} .verdict-tag.ship{background:rgba(94,225,255,.12);color:var(--cyan)}
 .result h3{margin:0;font:700 19px/1.25 var(--display);letter-spacing:-.01em;max-width:68ch;text-wrap:balance}
@@ -329,6 +331,7 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <span>Oslo <b id="oslo">--:--</b> · ET <b id="et">--:--</b></span>
     <span class="chip" id="sess">--</span>
     <span class="chip" title="Topstep flattens every position at 16:10 ET">flatten in <b id="flat">--</b></span>
+    <button class="stopall" id="stopall" type="button" title="Emergency stop: cancel every tab's turn, kill their shell commands, refuse open approvals (Alt+Shift+X, /stop all)">STOP ALL</button>
     <span id="conn">connecting</span>
   </header>
 
@@ -375,6 +378,7 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
         </div>
         <div class="ftabs" role="tablist" id="ftabs"></div>
         <span class="live still" id="cstate">idle</span>
+        <button class="iconbtn" id="undo" title="Put back the files the last file-changing turn wrote with Write or Edit (/undo). Bash changes are not undone.">undo turn</button>
         <button class="iconbtn" id="runit" title="Run the tests under coverage and colour the changed lines: green = a test ran it, red = no test did (/runit)">run it</button>
         <button class="iconbtn" id="fold" aria-expanded="true" title="Fold to one line">fold</button>
       </header>
@@ -781,6 +785,9 @@ function traceFinished(e) {
   if (r.tail) { const pre = el("pre"); pre.textContent = r.tail; box.append(pre); }
   setLive(false, "traced"); setView("result");
 }
+function stopAll() { send({ type: "stop_all" }); }
+$("stopall").onclick = stopAll;
+$("undo").onclick = () => send({ type: "prompt", text: "/undo" });
 $("runit").onclick = () => { setLive(true, "running the tests under coverage"); send({ type: "prompt", text: "/runit" }); };
 function checksStarted(e) { setLive(true, `checking ${e.files.length} file${e.files.length === 1 ? "" : "s"}`); $("checksum").textContent = "running"; }
 function checksFinished(e) {
@@ -1144,6 +1151,7 @@ const handlers = {
   TurnEnded: (e) => { if (streaming.size) endStreams(); setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); if (e.reason === "done") speakAnswer(e.text); },
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
   ApprovalResolved: (e) => { const i = approvals.findIndex((a) => a.id === e.id); if (i >= 0) { approvals.splice(i, 1); showApproval(); } },
+  StopAll: () => {},  // every tab already got the stop notice
   CommandOutput: (e) => { current = null; add(el("pre", "cmdout", `${e.command}\n${e.text}`)); },
   Bars: barsLoaded,
   Transcript: transcriptLoaded,
@@ -1235,7 +1243,7 @@ const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["age
   ["models", "list models"], ["think", "show thinking on/off"], ["permissions", "file, shell, web rules"], ["hooks", "loaded hooks"],
   ["skills", "loaded skills"], ["memory", "memory files"], ["resume", "resume a session"], ["init", "write a project note"],
   ["commands", "all commands"], ["check", "lint + type-check changed files"], ["runit", "which changed lines tests run"],
-  ["trace", "calls one test makes"], ["clear", "clear the history"], ["help", "help"]];
+  ["trace", "calls one test makes"], ["undo", "put back the last turn's file changes"], ["stop", "stop all: emergency stop"], ["clear", "clear the history"], ["help", "help"]];
 const input = $("input"), menu = $("menu"); let sel = 0, shown = [];
 SLASH.slice(0, 7).forEach(([c]) => { const b = el("button", null, "/" + c); b.type = "button"; b.onclick = () => { input.value = "/" + c; input.focus(); drawMenu(); }; $("slashbar").append(b); });
 function drawMenu() {
@@ -1265,6 +1273,7 @@ $("stop").addEventListener("click", () => send({ type: "cancel" }));
 $("model").addEventListener("change", (event) => send({ type: "prompt", text: "/model " + event.target.value }));
 $("mode").addEventListener("change", (event) => send({ type: "prompt", text: "/mode " + event.target.value }));
 document.addEventListener("keydown", (event) => {
+  if (event.altKey && event.shiftKey && (event.key === "X" || event.key === "x")) { event.preventDefault(); stopAll(); return; }
   // Approval keys only when no text field has the focus (an empty message box does not count).
   const field = event.target.matches && event.target.matches("input, select, textarea");
   const typing = field && !(event.target === input && input.value === "");

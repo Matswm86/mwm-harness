@@ -56,6 +56,7 @@ from mwm_harness.streaming import StreamAssembler
 from mwm_harness.tools import Tool, ToolContext, ToolResult, default_tools
 from mwm_harness.tools.search import ToolSearch
 from mwm_harness.transcript import Transcript, load_messages, usage_to_anthropic
+from mwm_harness.undo import UndoLog, UndoReport
 
 TOOL_CRASHES = (OSError, ValueError, RuntimeError, KeyError, TypeError, UnicodeError)
 
@@ -201,6 +202,7 @@ class Session:
         self.plan = ""
         self.touched: list[str] = []
         self.written: list[Path] = []  # files this turn wrote, for the check runner
+        self.undo_log = UndoLog()  # what each recent turn's writes replaced, for /undo
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -470,6 +472,7 @@ class Session:
 
     async def _turn(self, prompt: str) -> ev.TurnEnded:
         self.bus.emit(ev.TurnStarted(prompt))
+        self.undo_log.start(prompt)
         outcome = await self.hooks.run("UserPromptSubmit", prompt=prompt)
         self._report(outcome, "UserPromptSubmit")
         if outcome.blocked:
@@ -751,6 +754,12 @@ class Session:
         if decision.verdict == "ask" and not await self._approve(name, tool_input, decision.reason):
             return ToolResult("The user declined this action. Ask before trying another way.", True)
 
+        if name in WRITE_TOOLS:
+            self.undo_log.before_write(
+                self.tool_ctx.resolve(str(tool_input.get("file_path") or ""))
+            )
+        elif name == "Bash":
+            self.undo_log.note_bash()
         try:
             result = await tool.run(tool_input, self.tool_ctx)
         except TOOL_CRASHES as exc:
@@ -795,6 +804,13 @@ class Session:
             return []
         self.bus.emit(ev.ChecksFinished(str(root), as_dicts(results)))
         return results
+
+    def undo(self) -> UndoReport:
+        """Put back the files the newest file-changing turn wrote (between turns only)."""
+        report = self.undo_log.undo(self.cwd)
+        if report.restored or report.deleted:
+            self.bus.emit(ev.FilesTouched(list(self.touched)))
+        return report
 
     async def changed_files(self) -> list[Path]:
         """What the last editing turn wrote, else what git reports changed or new."""
@@ -847,6 +863,7 @@ class Session:
         self.bus.emit(ev.FilesTouched(list(self.touched)))
 
     def _end(self, reason: str, text: str = "") -> ev.TurnEnded:
+        self.undo_log.end()
         ended = ev.TurnEnded(reason, text)
         self.bus.emit(ended)
         return ended

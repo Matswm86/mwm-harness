@@ -46,6 +46,7 @@ HELP = """\
 /agents               subagents the model can start with the Task tool
 /jev                  Jev's decision log: calls, known outcomes, hit rate per domain
 /postmortem [draft] [ID]  which harness layer failed this session (or session ID); draft = model writes one fix as a draft
+/undo                 put back the files the last file-changing turn wrote (Write/Edit only)
 /check                compile, lint and type-check the changed files (also runs after each editing turn)
 /runit [pytest args]  run the tests under coverage: which changed lines did a test execute
 /trace TEST           run one test (pytest node id) and list the calls it made, with argument values
@@ -109,6 +110,10 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
             out.line(f"compacted {before} messages into a summary of {len(summary):,} characters")
         elif not before:
             out.line("nothing to compact")
+        return True
+    if name == "/undo":
+        for row in session.undo().lines():
+            out.line(row)
         return True
     if name == "/check":
         files = await session.changed_files()

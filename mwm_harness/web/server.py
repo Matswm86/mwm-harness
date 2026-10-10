@@ -266,6 +266,22 @@ class Tab:
             "runit": self.runit,
         }
 
+    def stop(self) -> bool:
+        """Emergency stop for this tab: cancel the turn (its shell tree dies with it),
+        refuse every open approval, cancel test runs. True when something was running."""
+        hit = bool(self.pending) or any(not t.done() for t in self._side_tasks)
+        for _, future in list(self.pending.values()):
+            if not future.done():
+                future.set_result("no")
+        for task in list(self._side_tasks):
+            task.cancel()
+        if self.session.cancel():
+            hit = True
+        elif self.turn is not None and not self.turn.done():
+            self.turn.cancel()
+            hit = True
+        return hit
+
     # ----------------------------------------------------------- approvals
 
     async def ask(self, tool_name: str, tool_input: dict[str, Any], reason: str) -> bool:
@@ -537,6 +553,9 @@ class Tab:
             await self.handle({"type": "open", "path": text.split(None, 1)[1]}, reply)
             return ""
         out = CapturedOutput()
+        if words[:2] == ["/stop", "all"]:
+            answer(self.panel.stop_all())
+            return ""
         if words[0] in SIDE_COMMANDS:
             # Test runs take minutes: run them beside the websocket reader, report by event.
             async def side() -> None:
@@ -548,10 +567,13 @@ class Tab:
             self._side_tasks.add(task)
             task.add_done_callback(self._side_tasks.discard)
             return ""
-        if self.busy and words[0] == "/compact":
-            out.line("a turn is running; /compact works between turns")
+        if self.busy and words[0] in ("/compact", "/undo"):
+            out.line(f"a turn is running; {words[0]} works between turns")
         elif await run_async_command(self.session, text, out):
             self.broadcast(self.state())
+            if out.rows:
+                answer("\n".join(out.rows))
+            return ""  # handled, even when it printed nothing (its result came as events)
         if out.rows:
             answer("\n".join(out.rows))
             return ""
@@ -582,6 +604,16 @@ class Panel:
     the page without one goes to the first tab. Tabs share the MCP server
     processes of the first session; closing a tab never stops them.
     """
+
+    def stop_all(self) -> str:
+        """Stop every tab at once; returns the line shown to the person."""
+        stopped = [tab.label for tab in self.tabs.values() if tab.stop()]
+        text = f"EMERGENCY STOP: stopped {len(stopped)} of {len(self.tabs)} tab(s)" + (
+            f" ({', '.join(stopped)})" if stopped else ": nothing was running"
+        )
+        for tab in self.tabs.values():
+            tab.broadcast({"type": "Notice", "level": "error", "text": text, "ts": ev.now_stamp()})
+        return text
 
     def __init__(
         self,
@@ -671,6 +703,9 @@ class Panel:
 
     async def handle(self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]) -> None:
         kind = message.get("type")
+        if kind == "stop_all":
+            reply.put_nowait({"type": "StopAll", "text": self.stop_all()})
+            return
         if kind == "tab_new":
             await self.new_tab(message, reply)
         elif kind == "tab_close":

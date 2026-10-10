@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from mwm_harness.providers import chunks_for
 from mwm_harness.web.server import create_app
@@ -279,3 +280,36 @@ def test_slash_tab_in_the_panel_lists_and_opens_tabs(make_session):
         ws.send_json({"type": "prompt", "tab": "t2", "text": "/tab"})
         rows = until(ws, "CommandOutput")[-1]["text"].splitlines()
         assert len(rows) == 2 and rows[1].startswith("* 2")
+
+
+def test_emergency_stop_cancels_every_tab_and_refuses_open_approvals(make_session):
+    first, second, client = two_tab_client(
+        make_session,
+        [chunks_for(tool_calls=[("Bash", {"command": "sleep 30"})]), chunks_for("x")],
+        [
+            chunks_for(tool_calls=[("Write", {"file_path": "w.txt", "content": "1"})]),
+            chunks_for("Understood."),
+        ],
+    )
+    first.permissions.mode = "bypassPermissions"
+    started = time.monotonic()
+    with client, client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws:
+        until(ws, "Tabs")
+        ws.send_json({"type": "tab_new"})
+        until(ws, "Tabs")
+        ws.send_json({"type": "prompt", "tab": "t1", "text": "long"})
+        until(ws, "ToolStarted", "t1")
+        ws.send_json({"type": "prompt", "tab": "t2", "text": "write"})
+        until(ws, "ApprovalRequest", "t2")
+        ws.send_json({"type": "stop_all"})
+        seen = until(ws, "StopAll")
+        assert "stopped 2 of 2" in seen[-1]["text"]
+        seen += until(ws, "TurnEnded", "t2")
+        ends = {m["tab"]: m["reason"] for m in seen if m["type"] == "TurnEnded"}
+        assert ends.get("t2") in ("done", "cancelled")
+        if "t1" not in ends:
+            seen += until(ws, "TurnEnded", "t1")
+            ends = {m["tab"]: m["reason"] for m in seen if m["type"] == "TurnEnded"}
+        assert ends["t1"] == "cancelled"
+    assert time.monotonic() - started < 10  # the 30 s shell was killed, not waited out
+    assert not (second.cwd / "w.txt").exists()
