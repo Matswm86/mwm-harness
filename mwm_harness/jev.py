@@ -24,8 +24,16 @@ against Sonnet 5.5 labels:
 - Every other question goes to Jev: it beat Clef on passage relevance (0.688
   vs 0.647, n=400) and on answer checks (0.733 vs 0.633, n=150). Yes/no and
   score questions were not re-tested and stay on Jev.
+- When Jev is less sure than the cut-off in ``ESCALATION_CUTOFFS`` on a
+  question shape listed there, Sonnet answers instead. On a held-out half of
+  the same items: relevance 0.921 with 56% sent to Sonnet (cut-off 0.78),
+  answer checks 0.889 with 29% sent (cut-off 0.69). Every blend with Clef
+  needed as many Sonnet calls or more. If Sonnet fails, Jev's answer stands
+  and the failure is logged. ``MWM_JEV_ESCALATE=0`` turns escalation off.
+- If Jev itself fails, the call is logged and retried on Clef when Clef
+  credentials exist. A Clef answer is never escalated (no measured cut-off).
 
-Clef is used only when a caller asks for it by name.
+Clef is otherwise used only when a caller asks for it by name.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,6 +75,17 @@ LETTERS = "ABCDE"
 RETRY_STATUSES = (429, 529)
 QUESTION_TYPES = ("noul", "choice", "score")
 STATE_PREVIEW_CHARS = 400
+SONNET_MODEL = "claude-sonnet-5-5"
+ESCALATE_ENV = "MWM_JEV_ESCALATE"
+# Option set of a one-question choice -> lowest Jev confidence that is kept.
+ESCALATION_CUTOFFS = {
+    frozenset({"2", "1", "0"}): 0.78,  # passage relevance
+    frozenset({"full", "partial", "no"}): 0.69,  # does the top passage answer the question
+}
+SONNET_SYSTEM = (
+    "You are a judge. You get a STATE and one QUESTION with lettered options. "
+    "Reply with only the option key that answers the question, nothing else."
+)
 
 
 class JevError(Exception):
@@ -114,6 +134,26 @@ def is_route_question(questions: dict[str, Any]) -> bool:
         and isinstance(criteria, dict)
         and set(criteria) == set(ROUTE_KEYS)
     )
+
+
+def escalation_cutoff(questions: dict[str, Any]) -> float | None:
+    """The Jev confidence below which Sonnet answers, for a measured question shape; else None."""
+    if os.environ.get(ESCALATE_ENV, "1").strip() == "0" or len(questions) != 1:
+        return None
+    (question,) = questions.values()
+    criteria = question.get("criteria")
+    if question.get("type") != "choice" or not isinstance(criteria, dict):
+        return None
+    return ESCALATION_CUTOFFS.get(frozenset(str(k) for k in criteria))
+
+
+def choice_confidence(answer: dict[str, Any]) -> float:
+    """Jev's probability for the option it chose (0.0 when it gave none)."""
+    probs = answer.get("probabilities") or {}
+    try:
+        return float(probs.get(answer.get("choice"), 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def route_model() -> str:
@@ -327,6 +367,7 @@ class JevClient:
         retries: int = 3,
         timeout: float = 30.0,
         cloudflare: tuple[str, str] | tuple[()] | None = None,
+        sonnet: Callable[[str, str], str | None] | None = None,
     ) -> None:
         self._key = api_key
         self.log = log or DecisionLog()
@@ -334,6 +375,7 @@ class JevClient:
         self._retries = retries
         self._timeout = timeout
         self._cf = cloudflare
+        self._sonnet = sonnet
 
     def _api_key(self) -> str:
         key = self._key or os.environ.get(KEY_ENV) or load_secrets().get(KEY_ENV, "")
@@ -379,13 +421,82 @@ class JevClient:
                         verdict = await self._post(body)
             elif model in CLEF_MODELS:
                 verdict = await self._post_clef(body)
+            elif auto and self._cloudflare():
+                try:
+                    verdict = await self._post(body)
+                except JevError as exc:
+                    self.log.failure(f"{exc}; retried on {CLEF_DEFAULT}", domain, label, caller)
+                    body["model"] = CLEF_DEFAULT
+                    verdict = await self._post_clef(body)
             else:
                 verdict = await self._post(body)
         except JevError as exc:
             self.log.failure(str(exc), domain, label, caller)
             raise
+        if auto and body["model"] == DEFAULT_MODEL:
+            verdict = await self._maybe_escalate(verdict, state, questions, domain, label, caller)
         self.log.decision(verdict, state, questions, domain, label, caller)
         return verdict
+
+    async def _maybe_escalate(
+        self,
+        verdict: Verdict,
+        state: Any,
+        questions: dict[str, Any],
+        domain: str,
+        label: str,
+        caller: str,
+    ) -> Verdict:
+        """Swap in Sonnet's answer when Jev is below the measured cut-off; keep Jev's if Sonnet fails."""
+        cutoff = escalation_cutoff(questions)
+        if cutoff is None:
+            return verdict
+        ((name, question),) = questions.items()
+        if name not in verdict.answers:
+            return verdict
+        jev_answer = verdict.answers[name]
+        confidence = choice_confidence(jev_answer)
+        if confidence >= cutoff:
+            return verdict
+        started = time.monotonic()
+        try:
+            choice = await asyncio.to_thread(self._ask_sonnet, state, question)
+        except JevError as exc:
+            self.log.failure(
+                f"Sonnet escalation failed, kept Jev's answer: {exc}", domain, label, caller
+            )
+            return verdict
+        answer = {
+            "type": "choice",
+            "choice": choice,
+            "escalated": {"from": verdict.model, "confidence": confidence, "cutoff": cutoff},
+            "jev": jev_answer,
+        }
+        return Verdict(
+            id=verdict.id,
+            answers={name: answer},
+            model=f"{SONNET_MODEL} (escalated from {verdict.model})",
+            usage=verdict.usage,
+            latency_ms=verdict.latency_ms + int((time.monotonic() - started) * 1000),
+        )
+
+    def _ask_sonnet(self, state: Any, question: dict[str, Any]) -> str:
+        """One option key from Sonnet through the workspace's `claude -p` wrapper."""
+        criteria = {str(k): v for k, v in question["criteria"].items()}
+        text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
+        options = "\n".join(f"{key}: {desc}" for key, desc in criteria.items())
+        prompt = (
+            f"STATE:\n{text}\n\nQUESTION: {question['instructions']}\n\n"
+            f"OPTIONS:\n{options}\n\nReply with one key from: {', '.join(criteria)}"
+        )
+        call = self._sonnet or _workspace_sonnet()
+        reply = (call(SONNET_SYSTEM, prompt) or "").strip().strip("`'\".").strip()
+        if reply in criteria:
+            return reply
+        hits = [k for k in criteria if reply.lower().split()[:1] == [k.lower()]]
+        if len(hits) == 1:
+            return hits[0]
+        raise JevError(f"Sonnet gave no option key: {reply[:80]!r}")
 
     async def _post_ollama_route(self, body: dict[str, Any]) -> Verdict:
         """Ask the local routing model for the option letter; probabilities come from its first-token logprobs."""
@@ -490,6 +601,24 @@ class JevClient:
                 if attempt + 1 < self._retries:
                     await asyncio.sleep(0.5 * 2**attempt)
         raise JevError(f"{vendor} request failed: {last}")
+
+
+def _workspace_sonnet() -> Callable[[str, str], str | None]:
+    """The workspace's `claude -p` wrapper (core/anthropic_via_claude_cli.py), bound to Sonnet."""
+    root = str(workspace_root())
+    if root not in sys.path:
+        sys.path.append(root)
+    try:
+        from core.anthropic_via_claude_cli import call_claude_cli  # noqa: PLC0415
+    except ImportError as exc:
+        raise JevError(f"no Sonnet path: {exc}") from exc
+
+    def call(system: str, prompt: str) -> str | None:
+        return call_claude_cli(
+            model=SONNET_MODEL, system_prompt=system, user_prompt=prompt, timeout=180
+        )
+
+    return call
 
 
 def judge(state: Any, questions: dict[str, Any], **fields: Any) -> Verdict:

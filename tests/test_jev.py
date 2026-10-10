@@ -264,3 +264,77 @@ def test_an_explicit_clef_model_does_not_fall_back(tmp_path):
     with pytest.raises(JevError, match="Clef request failed"):
         asyncio.run(client.ask("a", CHOICE_ONLY, model="clef"))
     assert [r["kind"] for r in log.records()] == ["failure"]
+
+
+REL_Q = {
+    "rel": {
+        "type": "choice",
+        "instructions": "How well does the PASSAGE answer the QUERY?",
+        "criteria": {"2": "answers it", "1": "partly", "0": "not relevant"},
+    }
+}
+
+
+def rel_answer(choice, p):
+    rest = {k: (1 - p) / 2 for k in ("2", "1", "0") if k != choice}
+    return {"rel": {"type": "choice", "choice": choice, "probabilities": {choice: p, **rest}}}
+
+
+def test_unsure_jev_is_escalated_to_sonnet_and_both_answers_are_logged(tmp_path):
+    asked = []
+    client, log = make_client(tmp_path, [ok(rel_answer("1", 0.60))])
+    client._sonnet = lambda system, prompt: asked.append(prompt) or "2"
+    verdict = asyncio.run(client.ask("QUERY: q\n\nPASSAGE: p", REL_Q, domain="brain"))
+    assert verdict.decisions() == {"rel": "2"}
+    assert "PASSAGE: p" in asked[0] and "2: answers it" in asked[0]
+    (row,) = log.records()
+    assert row["model"].startswith(jev.SONNET_MODEL)
+    assert row["answers"]["rel"]["jev"]["choice"] == "1"
+    assert row["answers"]["rel"]["escalated"]["cutoff"] == 0.78
+
+
+def test_sure_jev_is_kept_and_sonnet_is_not_called(tmp_path):
+    client, log = make_client(tmp_path, [ok(rel_answer("1", 0.91))])
+    client._sonnet = lambda system, prompt: pytest.fail("Sonnet must not be asked")
+    assert asyncio.run(client.ask("x", REL_Q)).decisions() == {"rel": "1"}
+
+
+def test_failed_sonnet_keeps_jevs_answer_and_logs_the_failure(tmp_path):
+    client, log = make_client(tmp_path, [ok(rel_answer("0", 0.50))])
+    client._sonnet = lambda system, prompt: "I think it is somewhat relevant"
+    assert asyncio.run(client.ask("x", REL_Q)).decisions() == {"rel": "0"}
+    kinds = [r["kind"] for r in log.records()]
+    assert kinds == ["failure", "decision"]
+    assert "kept Jev" in log.records()[0]["error"]
+
+
+def test_escalation_can_be_turned_off(tmp_path, monkeypatch):
+    monkeypatch.setenv(jev.ESCALATE_ENV, "0")
+    client, _ = make_client(tmp_path, [ok(rel_answer("1", 0.40))])
+    client._sonnet = lambda system, prompt: pytest.fail("Sonnet must not be asked")
+    assert asyncio.run(client.ask("x", REL_Q)).decisions() == {"rel": "1"}
+
+
+def test_unmeasured_question_shapes_are_never_escalated():
+    assert jev.escalation_cutoff(QUESTIONS) is None
+    assert jev.escalation_cutoff({"kind": QUESTIONS["kind"]}) is None
+    answers_q = {
+        "a": {
+            "type": "choice",
+            "instructions": "i",
+            "criteria": {"full": "", "partial": "", "no": ""},
+        }
+    }
+    assert jev.escalation_cutoff(answers_q) == 0.69
+
+
+def test_jev_down_retries_on_clef_and_does_not_escalate(tmp_path):
+    seen = []
+    clef = (200, {"success": True, "result": {"model": "clef", "answers": rel_answer("2", 0.4)}})
+    client, log = make_client(
+        tmp_path, [(401, {"error": "bad key"}), clef], seen, cloudflare=("acct", "tok")
+    )
+    client._sonnet = lambda system, prompt: pytest.fail("Clef answers are not escalated")
+    verdict = asyncio.run(client.ask("x", REL_Q))
+    assert verdict.decisions() == {"rel": "2"} and "cloudflare" in str(seen[1].url)
+    assert [r["kind"] for r in log.records()] == ["failure", "decision"]
