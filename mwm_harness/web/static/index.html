@@ -113,6 +113,12 @@ dialog.newtab button.go{background:var(--cyan);border-color:var(--cyan);color:#0
 .rail li>span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rail li small{color:var(--muted);font-size:10px;white-space:nowrap}
 .rail .empty{display:block;color:var(--faint);font:11px var(--mono);padding:0 4px}
+.rail .msearch{padding:0 10px 6px 12px}
+.rail .msearch input{width:100%;box-sizing:border-box;background:#070b14;border:1px solid var(--line-hi);border-radius:6px;padding:5px 8px;color:var(--text);font:11px var(--mono)}
+.rail .msearch input:focus{outline:1px solid var(--gold);border-color:var(--gold)}
+.rail li.hit{grid-template-columns:10px minmax(0,1fr) auto;align-items:start}
+.rail li.hit .sn{grid-column:2/4;color:var(--muted);font-size:10px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.rail li small.old{color:var(--alert)}
 .rail .note{color:var(--muted);font:11px/1.45 var(--mono);padding:0 16px 8px;white-space:pre-wrap;max-height:240px;overflow:auto}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);display:inline-block}
 .dot.run{background:var(--cyan);box-shadow:0 0 6px var(--cyan)} .dot.you{background:var(--gold);box-shadow:0 0 6px var(--gold);animation:pulse 1.2s ease-in-out infinite}
@@ -319,8 +325,12 @@ canvas#gl:active{cursor:grabbing}
     <details><summary>Touched files <em id="touchsum">0</em></summary><ul id="touched"></ul></details>
     <details open class="tree"><summary>Files <em id="cwdname"></em></summary><ul id="treeroot"></ul></details>
     <details><summary>Session <em id="sid"></em></summary><div class="note" id="sessinfo"></div></details>
-    <details><summary>Not wired yet <em>4</em></summary>
-      <div class="note">Background jobs, machines (docker, timers, VPS), handoffs and MASTER_TODO have a place in the design and no data source yet.</div>
+    <details id="handoffbox"><summary>Handoffs <em id="handoffsum"></em></summary>
+      <form class="msearch" id="msearch" role="search"><input id="mquery" type="search" placeholder="search memory + handoffs" aria-label="Search memory and handoffs" autocomplete="off"></form>
+      <ul id="handoffs"></ul>
+    </details>
+    <details><summary>Not wired yet <em>3</em></summary>
+      <div class="note">Background jobs, machines (docker, timers, VPS) and MASTER_TODO have a place in the design and no data source yet.</div>
     </details>
   </nav>
 
@@ -742,6 +752,38 @@ function setMcp(rows) {
   const sum = $("mcpsum"); sum.replaceChildren(`${up} up · ${tools} tools`);
   if (bad) { sum.append(" · "); sum.append(el("span", "w", `${bad} failed`)); }
 }
+/* ---------------- handoffs: newest rolling handoffs + memory-archive search ---------------- */
+let memoryQuery = "";
+function ageDays(date) { const d = Date.parse(date); return isNaN(d) ? null : Math.floor((Date.now() - d) / 864e5); }
+function openMemory(path) { send({ type: "memory_open", path }); }
+function memoryRow(title, sub, date, path, tip) {
+  const age = ageDays(date), li = el("li", "click hit"); li.tabIndex = 0; li.title = tip || path;
+  li.append(el("i", "dot" + (age !== null && age <= 2 ? " ok" : "")), el("span", null, title), el("small", age !== null && age > 14 ? "old" : null, date ? date.slice(5) : ""));
+  if (sub) li.append(el("span", "sn", sub));
+  li.onclick = () => openMemory(path); li.onkeydown = (ev) => { if (ev.key === "Enter") openMemory(path); };
+  return li;
+}
+function drawHandoffs(e) {
+  if (memoryQuery) return;
+  const ul = $("handoffs"); ul.replaceChildren();
+  (e.items || []).forEach((h) => ul.append(memoryRow(h.name, h.latest, new Date(h.mtime * 1000).toISOString().slice(0, 10), h.path, `${h.description}\nlast edited ${new Date(h.mtime * 1000).toLocaleString()}`)));
+  if (e.error || !(e.items || []).length) ul.append(el("li", "empty", e.error ? `cannot list handoffs: ${e.error}` : "No handoff files in memory/."));
+  $("handoffsum").textContent = `${(e.items || []).length} newest`;
+}
+function drawMemoryHits(e) {
+  if (e.query !== memoryQuery) return;                    // an older search came back late
+  const ul = $("handoffs"); ul.replaceChildren();
+  (e.hits || []).forEach((h) => ul.append(memoryRow(h.path.replace(/^handoff-/, "").replace(/\.md$/, ""), `${h.heading} · ${h.snippet}`, h.date, h.path,
+    `${h.path} :: ${h.heading}${h.age_days > 14 ? ` (OLD: ${h.age_days} days)` : ""}`)));
+  if (e.error) ul.append(el("li", "empty", `search failed: ${e.error}`));
+  else if (!(e.hits || []).length) ul.append(el("li", "empty", "not in the archive"));
+  $("handoffsum").textContent = `${(e.hits || []).length} hits`;
+}
+$("msearch").onsubmit = (ev) => { ev.preventDefault(); memoryQuery = $("mquery").value.trim();
+  if (memoryQuery) { $("handoffsum").textContent = "searching"; send({ type: "memory_search", query: memoryQuery }); } else send({ type: "handoffs" }); };
+$("mquery").addEventListener("input", () => { if (!$("mquery").value.trim() && memoryQuery) { memoryQuery = ""; send({ type: "handoffs" }); } });
+$("handoffbox").addEventListener("toggle", () => { if ($("handoffbox").open && !memoryQuery) send({ type: "handoffs" }); });
+
 function drawAgents() {
   const list = $("agents"); list.replaceChildren();
   const waiting = approvals.length > 0;
@@ -863,6 +905,8 @@ const handlers = {
   Compacted: (e) => note("info", `history compacted (${e.trigger}): ${e.messages_before} messages became one summary`),
   Tree: treeLoaded,
   FileContent: fileContent,
+  Handoffs: drawHandoffs,
+  MemoryHits: drawMemoryHits,
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; if (state) state.mode = e.mode; if (scene) scene.setCore(); },
   ModelChanged: (e) => { $("model").value = e.model; if (state) state.model = e.model; if (scene) scene.setCore(); },
@@ -942,7 +986,7 @@ function send(message) {
 function connect() {
   if (!token) { $("conn").textContent = "no access token: open the address printed by mwm --web"; $("conn").className = "down"; return; }
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; startChart(); };
+  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; startChart(); send({ type: "handoffs" }); };
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
     if (e.type === "State" && !session) { session = e.tab || ""; renderSessions(); }

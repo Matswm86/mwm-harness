@@ -36,7 +36,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mwm_harness import events as ev
 from mwm_harness.config import ModelSpec, config_dir
 from mwm_harness.loop import Session
-from mwm_harness.mcp_client import McpManager
+from mwm_harness.mcp_client import McpError, McpManager
+from mwm_harness.memory_panel import MemorySearch, OutsideMemory, list_handoffs, read_memory
 from mwm_harness.mods import Mod, ModError, ModSet, fill, load_mods, tab_values, why_not
 from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
@@ -568,6 +569,7 @@ class Panel:
             settings.voice_model, settings.voice_device, settings.voice_language
         )
         self.voice_warming: asyncio.Task[None] | None = None
+        self.memory = MemorySearch(session.cwd)
         self.factory = factory or session.sibling
         self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
         self.tabs: dict[str, Tab] = {}
@@ -670,6 +672,8 @@ class Panel:
             self.voice_warming = asyncio.create_task(self.voice.warm())
         elif kind == "transcribe":
             reply.put_nowait(await self.transcribe(message))
+        elif kind in ("handoffs", "memory_search", "memory_open"):
+            reply.put_nowait(await self.memory_reply(kind, message))
         elif kind == "bars":
             minutes = message.get("minutes")
             reply.put_nowait(
@@ -821,6 +825,34 @@ class Panel:
             await self.mcp.close()
         await self.market.close()
         await self.voice.close()
+        await self.memory.close()
+
+    async def memory_reply(self, kind: str, message: dict[str, Any]) -> dict[str, Any]:
+        """Handoffs rail: newest handoffs, archive search, and read-only memory files."""
+        if kind == "handoffs":
+            try:
+                return {"type": "Handoffs", "items": list_handoffs()}
+            except OSError as exc:
+                return {"type": "Handoffs", "items": [], "error": str(exc)}
+        if kind == "memory_open":
+            relative = str(message.get("path") or "")
+            try:
+                return {"type": "FileContent", **read_memory(relative)}
+            except (OutsideMemory, OSError):
+                return {"type": "FileContent", "path": relative, "error": "outside memory/"}
+        query = str(message.get("query") or "").strip()[:300]
+        if not query:
+            return {"type": "MemoryHits", "query": "", "hits": []}
+        try:
+            hits = await self.memory.search(query)
+        except (McpError, OSError, ValueError) as exc:
+            return {
+                "type": "MemoryHits",
+                "query": query,
+                "hits": [],
+                "error": str(exc) or type(exc).__name__,
+            }
+        return {"type": "MemoryHits", "query": query, "hits": hits}
 
     async def transcribe(self, message: dict[str, Any]) -> dict[str, Any]:
         audio = str(message.get("audio") or "")
