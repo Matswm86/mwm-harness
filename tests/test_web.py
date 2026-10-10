@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 from mwm_harness.sandbox import Sandbox
+from mwm_harness.tools import web
 from mwm_harness.tools.base import ToolContext
 from mwm_harness.tools.web import WebFetch, WebSearch, html_to_text, real_url
 
@@ -110,3 +111,39 @@ def test_search_uses_brave_when_a_key_is_set(tmp_path):
 def test_real_url_unwraps_the_redirect():
     assert real_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.b%2Fc") == "https://a.b/c"
     assert real_url("https://plain.example/") == "https://plain.example/"
+
+
+def test_fetch_connects_to_the_address_it_checked_dns_rebinding(tmp_path, monkeypatch):
+    # A rebinding DNS server answers "public" for the check, then "loopback" for the connect.
+    answers = iter([["93.184.216.34"], ["127.0.0.1"], ["127.0.0.1"]])
+    lookups = []
+
+    async def flipping(host):
+        lookups.append(host)
+        return next(answers)
+
+    monkeypatch.setattr(web, "resolve", flipping)
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="hello", headers={"Content-Type": "text/plain"})
+
+    tool = WebFetch(transport=httpx.MockTransport(handler))
+    result = run(tool.run({"url": "https://rebind.example:8443/x?q=1"}, context(tmp_path)))
+    assert not result.is_error and "URL: https://rebind.example:8443/x?q=1" in result.content
+    assert lookups == ["rebind.example"]  # one lookup, so the second answer is never used
+    request = seen[0]
+    assert str(request.url) == "https://93.184.216.34:8443/x?q=1"
+    assert request.headers["Host"] == "rebind.example:8443"
+    assert request.extensions["sni_hostname"] == "rebind.example"  # TLS checks the real name
+
+
+def test_fetch_refuses_a_host_with_any_private_address(tmp_path, monkeypatch):
+    async def mixed(host):
+        return ["93.184.216.34", "10.1.2.3"]
+
+    monkeypatch.setattr(web, "resolve", mixed)
+    tool = WebFetch(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    result = run(tool.run({"url": "http://mixed.example/"}, context(tmp_path)))
+    assert result.is_error and "private address" in result.content

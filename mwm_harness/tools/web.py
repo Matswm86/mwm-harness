@@ -19,7 +19,7 @@ import re
 import socket
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -111,22 +111,55 @@ def html_to_text(html: str, base_url: str) -> tuple[str, str]:
     return parser.title.strip(), parser.text()
 
 
-async def private_address(host: str) -> bool:
-    """True when the host is, or resolves to, a loopback, private or link-local address."""
-    try:
-        addresses = [ipaddress.ip_address(host.strip("[]"))]
-    except ValueError:
-        try:
-            infos = await asyncio.get_running_loop().getaddrinfo(
-                host, None, type=socket.SOCK_STREAM
-            )
-        except OSError:
-            return False  # does not resolve: the request itself will report that
-        addresses = [ipaddress.ip_address(info[4][0].split("%")[0]) for info in infos]
-    return any(
-        a.is_private or a.is_loopback or a.is_link_local or a.is_reserved or a.is_unspecified
-        for a in addresses
+def _blocked(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+        or address.is_multicast
     )
+
+
+async def resolve(host: str) -> list[str]:
+    """Every address ``host`` resolves to (one DNS lookup); empty when it does not resolve."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return []
+    return [info[4][0].split("%")[0] for info in infos]
+
+
+async def public_address(host: str) -> tuple[str, str]:
+    """``(address, refusal)``: one public address of ``host`` to connect to, or why not.
+
+    The host is resolved once and the request goes to the address that was checked, so a
+    DNS server cannot answer "public" for the check and "private" for the connection.
+    """
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        names = await resolve(host)
+        if not names:
+            return "", f"{host} does not resolve"
+        addresses = [ipaddress.ip_address(n) for n in names]
+    else:
+        addresses = [literal]
+    if any(_blocked(a) for a in addresses):
+        return "", (
+            f"refused: {host} is a local or private address "
+            "(web_allow_private in settings.toml lifts this)"
+        )
+    return str(addresses[0]), ""
+
+
+def pinned(url: str, address: str) -> str:
+    """``url`` with its host replaced by ``address``, port and path unchanged."""
+    parts = urlsplit(url)
+    host = f"[{address}]" if ":" in address else address
+    netloc = host + (f":{parts.port}" if parts.port else "")
+    return urlunsplit(parts._replace(netloc=netloc))
 
 
 class WebFetch(Tool):
@@ -163,13 +196,18 @@ class WebFetch(Tool):
                     parts = urlsplit(url)
                     if parts.scheme not in ("http", "https") or not parts.hostname:
                         return ToolResult(f"not an http(s) URL: {url}", True)
-                    if not self.allow_private and await private_address(parts.hostname):
-                        return ToolResult(
-                            f"refused: {parts.hostname} is a local or private address "
-                            "(web_allow_private in settings.toml lifts this)",
-                            True,
-                        )
-                    async with client.stream("GET", url) as response:
+                    target, headers, extensions = url, {}, {}
+                    if not self.allow_private:
+                        address, refusal = await public_address(parts.hostname)
+                        if refusal:
+                            return ToolResult(refusal, True)
+                        # Connect to the checked address; Host and TLS still name the site.
+                        target = pinned(url, address)
+                        headers = {"Host": parts.netloc.rsplit("@", 1)[-1]}
+                        extensions = {"sni_hostname": parts.hostname}
+                    async with client.stream(
+                        "GET", target, headers=headers, extensions=extensions
+                    ) as response:
                         if response.is_redirect and response.headers.get("location"):
                             url = urljoin(url, response.headers["location"])
                             continue

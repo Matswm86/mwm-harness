@@ -15,7 +15,9 @@ class Bash(Tool):
     description = (
         "Run a bash command in the project directory and return its combined output. "
         "timeout is in milliseconds (default 120000, max 600000). Use Grep and Glob "
-        "for searching instead of shell grep and find."
+        "for searching instead of shell grep and find. Commands run without network "
+        "access (no internet, no local servers); set network: true for a command that "
+        "needs it (pip install, git push, curl), and the person is asked first."
     )
     input_schema = {
         "type": "object",
@@ -23,13 +25,18 @@ class Bash(Tool):
             "command": {"type": "string"},
             "description": {"type": "string", "description": "What the command does"},
             "timeout": {"type": "integer"},
+            "network": {
+                "type": "boolean",
+                "description": "true if the command needs the internet or a local server",
+            },
         },
         "required": ["command"],
     }
 
     async def run(self, tool_input: dict[str, Any], ctx: ToolContext) -> ToolResult:
         timeout_ms = min(int(tool_input.get("timeout") or DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS)
-        result = await ctx.sandbox.run(tool_input["command"], ctx.cwd, timeout_ms / 1000)
+        network = bool(tool_input.get("network"))
+        result = await ctx.sandbox.run(tool_input["command"], ctx.cwd, timeout_ms / 1000, network)
         output = result.output.rstrip()
         if result.timed_out:
             note = f"[killed after {timeout_ms} ms timeout]"

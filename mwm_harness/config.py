@@ -112,6 +112,9 @@ class Settings:
     default_model: str = "qwen3.8-max"
     permission_mode: str = "default"
     sandbox: str = "auto"  # auto | bwrap | off
+    # Bash calls with network: true. ask = always ask the person, in every mode (default);
+    # allow = the normal permission decision; deny = refused. Without it, no network.
+    shell_network: str = "ask"
     extra_writable: list[str] = field(default_factory=list)
     # Folders outside the project that reading tools may open without asking. The
     # workspace root, the scratch folder and extra_writable are always included.
@@ -170,4 +173,8 @@ def load_settings(path: Path | None = None) -> Settings:
             if key not in Settings.__dataclass_fields__:
                 raise ConfigError(f"settings.toml: unknown key {key}")
             setattr(settings, key, value)
+    if settings.shell_network not in ("ask", "allow", "deny"):
+        raise ConfigError(
+            f"settings.toml: shell_network must be ask, allow or deny, got {settings.shell_network!r}"
+        )
     return settings

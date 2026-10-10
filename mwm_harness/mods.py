@@ -44,6 +44,7 @@ class Mod:
     kind: str
     note: str = ""
     confirm: bool = False
+    network: bool = False  # shell mods: the command may reach the network (asks first)
     ask: str = ""  # what {prompt} means, shown when the message box is empty
     lock: str = ""  # mods with the same lock name never run in two tabs at once
     run: str = ""

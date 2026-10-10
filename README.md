@@ -66,8 +66,10 @@ stdio server plays MCP, a mocked transport plays the web.
 - `sandbox.py`: shell commands run inside bubblewrap when it is available: the
   filesystem is read-only outside the project and the session scratch folder,
   and an empty folder is mounted over `~/.ssh`, `~/.gnupg`, `~/.aws` and the
-  harness's own config. It is a write boundary, not a network boundary. A
-  command's environment carries no variable whose name looks like a secret
+  harness's own config. Each command also gets an empty network namespace (no
+  internet, no host services) unless the call sets `network: true`, which asks
+  the person in every mode (`shell_network` = ask, allow or deny). A command's
+  environment carries no variable whose name looks like a secret
   (`bash_env_keep` exempts one); MCP servers keep their own keys and lose the
   model keys. When bubblewrap is missing the session says so at start instead
   of running bare in silence.
@@ -227,9 +229,11 @@ A security review of the permission, sandbox, web and panel code found five
 working bypasses (any file readable without a prompt, API keys in every shell
 command's environment, two deny rules lifted by renaming an MCP server, `rm`
 with long options, a silent no-sandbox fallback). All five are fixed and each
-is a test in `tests/test_security_review.py`. Still open: `WebFetch` resolves
-a host twice (a DNS-rebinding window), the sandbox has no network boundary, and
-about half the code (`cli.py`, the terminal front-end, `skills.py`, the MCP
+is a test in `tests/test_security_review.py`. Since 2026-10-10 `WebFetch`
+resolves a host once and connects to the address it checked (no DNS-rebinding
+window), and shell commands run without network unless the call sets
+`network: true`, which always asks first (`shell_network` in settings). Still
+open: about half the code (`cli.py`, the terminal front-end, `skills.py`, the MCP
 protocol handling) has had no review yet.
 
 ## Use

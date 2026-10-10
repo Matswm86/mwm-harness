@@ -436,7 +436,9 @@ class Tab:
             async with lock or contextlib.nullcontext():
                 if mod.kind == "shell":
                     command = fill(mod.run, values, shell=True)
-                    result = await session.run_tool_call("Bash", {"command": command}, mod.confirm)
+                    result = await session.run_tool_call(
+                        "Bash", {"command": command, "network": mod.network}, mod.confirm
+                    )
                     text = f"{head} {'failed' if result.is_error else 'done'}: {first_line(result.content)}"
                     session.bus.emit(ev.TextDelta(text))
                     session.bus.emit(ev.TurnEnded("error" if result.is_error else "done", text))

@@ -89,10 +89,14 @@ class Sandbox:
             '(sandbox = auto). Install bubblewrap, or set sandbox = "off" to accept this'
         )
 
-    def argv(self, command: str) -> list[str]:
+    def argv(self, command: str, network: bool = False) -> list[str]:
+        """The command line for ``command``; without ``network`` it gets its own empty
+        network namespace (only a loopback of its own: no internet, no host services)."""
         if not self.enabled:
             return ["bash", "-c", command]
         argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        if not network:
+            argv.append("--unshare-net")
         for name in PRIVATE_DIRS:
             private = Path.home() / name
             if private.is_dir() and not any(
@@ -104,9 +108,11 @@ class Sandbox:
                 argv += ["--bind", str(path), str(path)]
         return [*argv, "--die-with-parent", "bash", "-c", command]
 
-    async def run(self, command: str, cwd: Path, timeout: float) -> ShellResult:
+    async def run(
+        self, command: str, cwd: Path, timeout: float, network: bool = False
+    ) -> ShellResult:
         process = await asyncio.create_subprocess_exec(
-            *self.argv(command),
+            *self.argv(command, network),
             cwd=str(cwd),
             env=scrubbed_env(self.secret_env, self.env_keep),
             stdin=asyncio.subprocess.DEVNULL,

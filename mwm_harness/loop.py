@@ -734,6 +734,16 @@ class Session:
             decision.verdict, decision.reason = "ask", pre.permission_reason or "a hook asked"
         if decision.verdict == "allow" and force_ask:
             decision.verdict, decision.reason = "ask", "this action always asks first"
+        if name == "Bash" and tool_input.get("network") and decision.verdict != "deny":
+            policy = self.settings.shell_network
+            if policy == "deny":
+                return ToolResult(
+                    "network access for shell commands is switched off (shell_network = "
+                    '"deny" in settings.toml); do this without the network',
+                    True,
+                )
+            if policy == "ask":
+                decision.verdict, decision.reason = "ask", "this command asks for network access"
         if decision.verdict == "ask":
             doomed = tool.refusal(tool_input, self.tool_ctx)
             if doomed:  # seen live: 15 approval prompts for an Edit that could not apply

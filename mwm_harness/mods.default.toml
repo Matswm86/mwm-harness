@@ -17,6 +17,7 @@ confirm = true
 ask = "the commit message"
 note = "Commits this tab's files with the message in the box, then pushes. Always asks first."
 run = "git -C {tab.cwd} add -- {tab.changed} && git -C {tab.cwd} commit -m {prompt} && git -C {tab.cwd} push"
+network = true  # git push
 
 [[mod]]
 key = "F3"
