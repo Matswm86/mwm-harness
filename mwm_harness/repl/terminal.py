@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import signal
 import sys
 from datetime import datetime
@@ -45,6 +46,9 @@ HELP = """\
 /agents               subagents the model can start with the Task tool
 /jev                  Jev's decision log: calls, known outcomes, hit rate per domain
 /postmortem [draft] [ID]  which harness layer failed this session (or session ID); draft = model writes one fix as a draft
+/check                compile, lint and type-check the changed files (also runs after each editing turn)
+/runit [pytest args]  run the tests under coverage: which changed lines did a test execute
+/trace TEST           run one test (pytest node id) and list the calls it made, with argument values
 /compact [focus]      replace the history with a summary written by the model
 /init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
@@ -105,6 +109,20 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
             out.line(f"compacted {before} messages into a summary of {len(summary):,} characters")
         elif not before:
             out.line("nothing to compact")
+        return True
+    if name == "/check":
+        files = await session.changed_files()
+        if not await session.run_checks(files):
+            out.line("nothing to check: no changed file matches a check")
+        return True
+    if name == "/runit":
+        await session.run_it(shlex.split(argument))
+        return True
+    if name == "/trace":
+        if not argument.strip():
+            out.line("usage: /trace <pytest node id>, e.g. /trace tests/test_a.py::test_b")
+        else:
+            await session.trace(argument.strip())
         return True
     if name == "/mcp" and "refresh" in argument.split():
         await session.connect_mcp(refresh=True)
@@ -205,8 +223,60 @@ class Printer:
                 ),
                 event,
             )
+        elif isinstance(event, ev.ChecksFinished):
+            for result in event.results:
+                code = {"pass": DIM, "fail": RED}.get(result["status"], YELLOW)
+                self.line(self.paint(code, f"[check] {check_line(result)}"), event)
+                for finding in result["findings"][:5]:
+                    where = f"{finding['file']}:{finding['line']}"
+                    self.line(self.paint(code, f"  {where} {finding['message'][:160]}"), event)
+        elif isinstance(event, ev.RunItFinished):
+            for row in runit_lines(event.result):
+                self.line(
+                    self.paint(RED if "never run" in row or "FAIL" in row else DIM, row), event
+                )
+        elif isinstance(event, ev.TraceFinished):
+            for row in trace_lines(event.result):
+                self.line(self.paint(DIM, row), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
+
+
+def runit_lines(result: dict[str, Any]) -> list[str]:
+    if result["status"] != "ran":
+        label = "NOT RUN" if result["status"] == "not_run" else "TIMEOUT"
+        return [f"[run-it] {label}: {result['reason']}"]
+    tests = "tests pass" if result["tests_passed"] else "TESTS FAIL"
+    rows = [f"[run-it] {tests} ({result['summary']})"]
+    for path, states in result["files"].items():
+        missed = [s["line"] for s in states if s["state"] == "miss"]
+        hit = len(states) - len(missed)
+        rows.append(
+            f"  {path}: {hit} changed line(s) run" + (f", never run: {missed}" if missed else "")
+        )
+    return rows + ["  " + r for r in result["tail"].splitlines()]
+
+
+def trace_lines(result: dict[str, Any]) -> list[str]:
+    if result["status"] != "ran":
+        return [f"[trace] {result['test']}: {result['status'].upper()}: {result['reason']}"]
+    rows = [f"[trace] {result['test']}: {'passed' if result['passed'] else 'FAILED'}"]
+    for call in result["calls"][:60]:
+        args = ", ".join(f"{k}={v}" for k, v in call["args"].items())
+        rows.append(
+            f"  {'  ' * call['depth']}{call['function']}({args})  {call['file']}:{call['line']}"
+        )
+    if result["skipped"]:
+        rows.append(f"  … {result['skipped']} deeper or later call(s) not shown")
+    return rows
+
+
+def check_line(result: dict[str, Any]) -> str:
+    status = {"pass": "pass", "fail": "FAIL", "not_run": "NOT RUN", "timeout": "TIMEOUT"}
+    text = f"{result['check']}: {status.get(result['status'], result['status'])}"
+    if result["status"] == "fail":
+        text += f", {len(result['findings'])} finding(s)"
+    return text + (f": {result['reason']}" if result["reason"] else "")
 
 
 def format_todos(todos: list[dict[str, Any]]) -> str:

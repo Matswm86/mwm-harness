@@ -41,7 +41,10 @@ def todos(*states: str) -> dict:
 
 REPORT = """\"\"\"Summarise parsed items for the daily report.\"\"\"
 
+import os
 from collections import Counter
+
+WIDTH: int = "10"
 
 
 def parse(items):
@@ -110,6 +113,11 @@ async def main(port: int) -> None:
         project = Path(folder) / "scratch-repo"
         project.mkdir()
         (project / "parse.py").write_text("def parse(items):\n    return list(items)[:-1]\n")
+        # A test for the report helper the script writes, so "run it" has something to colour.
+        (project / "test_report.py").write_text(
+            "from report import summarise\n\n\ndef test_summarise_counts_kinds():\n"
+            '    assert "fill" in summarise([("fill", 1), ("fill", 2)])\n'
+        )
         session = Session(
             cwd=project,
             model=MODELS["scripted-qwen"],

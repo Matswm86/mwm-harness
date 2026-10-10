@@ -153,6 +153,8 @@ class Settings:
     # the product they ship with. A name matches with or without its "prefix:".
     skill_exclude: list[str] = field(default_factory=list)
     agent_models: dict[str, str] = field(default_factory=dict)  # e.g. opus = "qwen3.8-max"
+    # Run the check chain (checks.default.toml) on the files a turn changed, before it ends.
+    checks_after_turn: bool = True
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

@@ -1,0 +1,54 @@
+# Check chain the harness runs on the files a turn changed. A repo overrides the whole
+# list with .mwm/checks.toml; the config folder's checks.toml overrides it for every repo.
+#
+# run:  a command list. "{files}" = every matching changed file in one call, "{file}" = one
+#       call per file, "{python}" = the repo's .venv python, else the harness python.
+#       "builtin:py_compile" compiles Python in the harness itself.
+#       "unavailable:<reason>" reports the check as NOT RUN with that reason.
+# pattern: regex with named groups file, line, col (optional), msg. Default: file:line:col: msg.
+#       A finding with no msg takes the last output line that mentions "Error".
+
+timeout = 30.0  # seconds per command
+
+[[check]]
+name = "py_compile"
+glob = ["*.py"]
+run = "builtin:py_compile"
+
+[[check]]
+name = "ruff"
+glob = ["*.py"]
+run = ["ruff", "check", "--output-format=concise", "--no-cache", "{files}"]
+
+[[check]]
+name = "mypy"
+glob = ["*.py"]
+run = ["mypy", "--no-error-summary", "--show-column-numbers", "--follow-imports=silent",
+       "--ignore-missing-imports", "{files}"]
+
+[[check]]
+name = "node --check"
+glob = ["*.js", "*.mjs", "*.cjs"]
+run = ["node", "--check", "{file}"]
+pattern = '^(?P<file>[^\n:]+\.[cm]?js):(?P<line>\d+)$'
+
+[[check]]
+name = "bash -n"
+glob = ["*.sh", "*.bash"]
+run = ["bash", "-n", "{file}"]
+pattern = '^(?P<file>[^\n:]+): line (?P<line>\d+): (?P<msg>.+)$'
+
+[[check]]
+name = "shellcheck"
+glob = ["*.sh", "*.bash"]
+run = ["shellcheck", "-f", "gcc", "{files}"]
+
+[[check]]
+name = "gdlint"
+glob = ["*.gd"]
+run = ["gdlint", "{files}"]
+
+[[check]]
+name = "pine compile"
+glob = ["*.pine"]
+run = "unavailable:needs the TradingView compiler MCP, which the check runner does not call yet"

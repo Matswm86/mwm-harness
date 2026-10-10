@@ -62,6 +62,7 @@ LIVE_EVENTS = (
     ev.SubagentFinished,
 )
 MAX_LIVE_EVENTS = 2000
+SIDE_COMMANDS = ("/check", "/runit", "/trace")  # slash commands that run as background tasks
 CLOSED_TABS_KEPT = 10
 
 
@@ -159,6 +160,9 @@ class Tab:
         self.worktree = ""  # set when the tab works in its own git worktree
         self.written: set[Path] = set()  # files this tab's Write/Edit calls changed
         self._writing: dict[str, str] = {}
+        self.checks: dict[str, Any] | None = None  # the last ChecksFinished, for State
+        self.runit: dict[str, Any] | None = None  # the last RunItFinished, for State
+        self._side_tasks: set[asyncio.Task[None]] = set()
         session.bus.subscribe(self.on_event)
         session.approver = self
 
@@ -172,6 +176,10 @@ class Tab:
             payload.update(self.usage())
         self.broadcast(payload)
         self.remember(event, payload)
+        if isinstance(event, ev.ChecksFinished):
+            self.checks = payload
+        elif isinstance(event, ev.RunItFinished):
+            self.runit = payload
         if isinstance(event, ev.ToolStarted) and event.name in ("Write", "Edit", "MultiEdit"):
             self._writing[event.tool_use_id] = str(event.input.get("file_path") or "")
         elif isinstance(event, ev.ToolFinished) and event.tool_use_id in self._writing:
@@ -254,6 +262,8 @@ class Tab:
             "mods": self.mods_payload(""),
             "approvals": [request for request, _ in self.pending.values()],
             "mcp": mcp_servers(session.mcp or self.panel.mcp),
+            "checks": self.checks,
+            "runit": self.runit,
         }
 
     # ----------------------------------------------------------- approvals
@@ -525,6 +535,17 @@ class Tab:
             await self.handle({"type": "open", "path": text.split(None, 1)[1]}, reply)
             return ""
         out = CapturedOutput()
+        if words[0] in SIDE_COMMANDS:
+            # Test runs take minutes: run them beside the websocket reader, report by event.
+            async def side() -> None:
+                await run_async_command(self.session, text, out)
+                if out.rows:
+                    answer("\n".join(out.rows))
+
+            task = asyncio.create_task(side())
+            self._side_tasks.add(task)
+            task.add_done_callback(self._side_tasks.discard)
+            return ""
         if self.busy and words[0] == "/compact":
             out.line("a turn is running; /compact works between turns")
         elif await run_async_command(self.session, text, out):

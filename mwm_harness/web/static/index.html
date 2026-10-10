@@ -194,6 +194,22 @@ canvas#gl:active{cursor:grabbing}
 /* result: the card a finished turn leaves behind */
 .result{padding:14px 18px;display:grid;gap:10px;align-content:start}
 .result .kicker{display:flex;gap:8px;align-items:center;font:500 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.rail li.ck{grid-template-columns:56px minmax(0,1fr)} .ck .vt{text-align:center}
+.rail li.ck>span:nth-child(2){white-space:normal}
+.verdict-tag.warn{background:rgba(255,179,71,.14);color:var(--gold)}
+.rail li.fd{display:block;padding-left:66px;font-size:10.5px;color:var(--muted);cursor:pointer;white-space:normal} .rail li.fd:hover{color:var(--text)}
+li.fd b{color:var(--alert);font-weight:500} li.fd.warning b{color:var(--gold)}
+.gm-err{background:var(--alert);border-radius:50%;margin-left:5px;width:8px!important;height:8px!important;margin-top:6px}
+.gm-warn{background:var(--gold);border-radius:50%;margin-left:5px;width:8px!important;height:8px!important;margin-top:6px}
+.ln-err{background:rgba(255,107,91,.10)} .ln-warn{background:rgba(255,179,71,.08)}
+pre.src div.bad{background:rgba(255,107,91,.12)} pre.src div.bad i{color:var(--alert)}
+.cov-hit{background:var(--ok);width:3px!important;margin-left:3px} .cov-miss{background:var(--alert);width:3px!important;margin-left:3px}
+pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shadow:inset -3px 0 var(--alert)} pre.src div{cursor:default}
+.code{position:relative} .lineinfo{position:absolute;left:12px;right:12px;bottom:34px;z-index:5;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#070b14;box-shadow:0 -6px 18px rgba(0,0,0,.5);font:11px/1.5 var(--mono);color:var(--text);display:grid;gap:4px}
+.lineinfo .t{display:flex;gap:8px;align-items:center} .lineinfo .t span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lineinfo .x{position:absolute;right:8px;top:6px}
+.result ul.trace{display:block;margin:0;padding:0;list-style:none;font:11.5px/1.6 var(--mono)} .result ul.trace li{display:block;cursor:pointer;white-space:pre;overflow:hidden;text-overflow:ellipsis;padding:0 4px;border:0}
+.trace li:hover{background:rgba(255,255,255,.04)} .trace li.chg b{color:var(--cyan)} .trace li small{color:var(--muted)} .trace li em{font-style:normal;color:var(--gold)}
 .verdict-tag{padding:1px 7px;border-radius:4px;font-weight:600;letter-spacing:.06em}
 .verdict-tag.pass{background:rgba(110,231,168,.15);color:var(--ok)} .verdict-tag.kill{background:rgba(255,107,91,.15);color:var(--alert)} .verdict-tag.ship{background:rgba(94,225,255,.12);color:var(--cyan)}
 .result h3{margin:0;font:700 19px/1.25 var(--display);letter-spacing:-.01em;max-width:68ch;text-wrap:balance}
@@ -321,6 +337,7 @@ canvas#gl:active{cursor:grabbing}
   <nav class="pane rail" aria-label="Session lists">
     <details open><summary>Agents <em id="agentsum"></em></summary><ul id="agents"></ul></details>
     <details open><summary>Outputs <em id="outcount">0 results</em></summary><ul id="outputs"></ul></details>
+    <details open id="checkbox"><summary>Checks <em id="checksum">none yet</em></summary><ul id="checks"></ul></details>
     <details open><summary>Tasks <em id="tasksum"></em></summary><ul id="tasks"></ul></details>
     <details><summary>Plan <em id="plansum">none</em></summary><div class="note" id="plan"></div></details>
     <details open><summary>MCP servers <em id="mcpsum"></em></summary><ul id="mcp"></ul></details>
@@ -358,10 +375,12 @@ canvas#gl:active{cursor:grabbing}
         </div>
         <div class="ftabs" role="tablist" id="ftabs"></div>
         <span class="live still" id="cstate">idle</span>
+        <button class="iconbtn" id="runit" title="Run the tests under coverage and colour the changed lines: green = a test ran it, red = no test did (/runit)">run it</button>
         <button class="iconbtn" id="fold" aria-expanded="true" title="Fold to one line">fold</button>
       </header>
       <div class="view" id="viewer"></div>
       <div class="view result" id="result" hidden></div>
+      <div class="lineinfo" id="lineinfo" hidden aria-live="polite"></div>
       <footer><span id="cstat"></span><span id="cnote">shows Edit and Write calls as they arrive; click a file to read it</span></footer>
     </section>
   </main>
@@ -609,7 +628,7 @@ function renderFileTabs() {
 }
 async function showFile(key) {
   activeFile = openFiles.has(key) ? key : "";
-  setView("code"); renderFileTabs();
+  setView("code"); renderFileTabs(); $("lineinfo").hidden = true;
   if (editor) { editor.dispose(); editor = null; }
   const box = $("viewer"); box.replaceChildren(); box.className = "view";
   const f = openFiles.get(activeFile);
@@ -621,11 +640,18 @@ async function showFile(key) {
   if (f.error) { box.append(el("div", "blank", `cannot show ${f.path}: ${f.error}`)); return; }
   const monaco = await loadMonaco();
   if (activeFile !== key) return;                  // another tab was chosen while Monaco loaded
-  if (!monaco) { const pre = el("pre", "src"); f.content.split("\n").forEach((l, i) => pre.append(srcRow(i + 1, "", l))); box.append(pre); return; }
+  if (!monaco) {
+    const marks = findingsFor(f.path), cov = coverageFor(f.path), pre = el("pre", "src");
+    f.content.split("\n").forEach((l, i) => { const row = srcRow(i + 1, "", l), hit = marks.filter((m) => m.line === i + 1);
+      const st = cov.find((x) => x.line === i + 1); if (st) { row.classList.add(st.state); row.onclick = () => showLineInfo(f.path, i + 1); }
+      if (hit.length) { row.classList.add("bad"); row.title = hit.map((m) => `${m.check}: ${m.message}`).join("\n"); } pre.append(row); });
+    box.append(pre); revealPending(f.path, pre); return;
+  }
   box.className = "view mon";
   monaco.editor.defineTheme("mwm", { base: "vs-dark", inherit: true, rules: [], colors: { "editor.background": "#070b14" } });
   editor = monaco.editor.create(box, { value: f.content, language: languageOf(f.path), readOnly: true,
-    automaticLayout: true, minimap: { enabled: false }, theme: "mwm", fontSize: 12, fontFamily: "JetBrains Mono, monospace" });
+    automaticLayout: true, minimap: { enabled: false }, theme: "mwm", fontSize: 12, fontFamily: "JetBrains Mono, monospace", glyphMargin: true });
+  markFindings(f.path);
 }
 function openFile(path) { send({ type: "open", path }); }
 function fileContent(e) { openFiles.set(e.path, { kind: "file", path: e.path, content: e.content, error: e.error }); showFile(e.path); }
@@ -649,6 +675,138 @@ divider.addEventListener("pointerdown", (e) => { divider.setPointerCapture(e.poi
   divider.addEventListener("pointermove", mv); divider.addEventListener("pointerup", () => divider.removeEventListener("pointermove", mv), { once: true }); });
 divider.addEventListener("keydown", (e) => { const cur = parseFloat($("centre").style.getPropertyValue("--split")) / 100 || .52; if (e.key === "ArrowUp") setSplit(cur - .05); if (e.key === "ArrowDown") setSplit(cur + .05); });
 
+/* ---------------- checks: compile, lint and type-check after each editing turn ---------------- */
+const checksByTab = new Map();  // tab id -> last ChecksFinished
+let pendingReveal = null;       // {path, line}: a finding was clicked, scroll there once the file shows
+const CHECK_TAG = { pass: ["pass", "PASS"], fail: ["kill", "FAIL"], not_run: ["warn", "NOT RUN"], timeout: ["warn", "TIMEOUT"] };
+function absOf(p) { const cwd = (state && state.cwd) || ""; return p.startsWith("/") ? p : `${cwd}/${p}`; }
+function relOf(abs) { const cwd = (state && state.cwd) || ""; return abs.startsWith(cwd + "/") ? abs.slice(cwd.length + 1) : abs; }
+function findingsFor(path) {
+  const c = checksByTab.get(session); if (!c) return [];
+  const target = absOf(path);
+  return c.results.flatMap((r) => r.findings).filter((f) => `${c.root}/${f.file}` === target);
+}
+function checkSummary(c) {
+  if (!c || !c.results.length) return "";
+  const count = (st) => c.results.filter((r) => r.status === st).length;
+  const parts = [[count("pass"), "pass"], [count("fail"), "FAIL"], [count("not_run"), "NOT RUN"], [count("timeout"), "TIMEOUT"]];
+  return parts.filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(", ");
+}
+function drawChecks() {
+  const c = checksByTab.get(session), ul = $("checks"); ul.replaceChildren();
+  $("checksum").textContent = c ? checkSummary(c) || "nothing to check" : "none yet";
+  if (!c) { ul.append(el("li", "empty", "After a turn that edits files, each check reports here.")); drawRunit(); return; }
+  c.results.forEach((r) => {
+    const [cls, word] = CHECK_TAG[r.status] || ["warn", r.status];
+    const li = el("li", "ck"); li.append(el("span", `vt verdict-tag ${cls}`, word), el("span", null, r.check + (r.reason ? `: ${r.reason}` : "")));
+    li.title = `${r.files.join(", ")} · ${r.seconds.toFixed(1)} s`; ul.append(li);
+    r.findings.slice(0, 12).forEach((f) => {
+      const row = el("li", `fd ${f.severity}`); row.tabIndex = 0;
+      row.append(el("b", null, `${f.file}:${f.line}`), document.createTextNode(" " + f.message));
+      const go = () => { pendingReveal = { path: `${c.root}/${f.file}`, line: f.line }; openFile(relOf(`${c.root}/${f.file}`)); };
+      row.onclick = go; row.onkeydown = (ev) => { if (ev.key === "Enter") go(); }; ul.append(row);
+    });
+    if (r.findings.length > 12) ul.append(el("li", "fd", `… ${r.findings.length - 12} more`));
+  });
+  drawRunit();
+}
+/* ---------------- run it: which changed lines did a test execute ---------------- */
+const runitByTab = new Map();   // tab id -> last RunItFinished
+function runitTag(r) {
+  if (r.status !== "ran") return ["warn", r.status === "timeout" ? "TIMEOUT" : "NOT RUN"];
+  if (!r.tests_passed) return ["kill", "FAIL"];
+  const miss = Object.values(r.files).flat().filter((x) => x.state === "miss").length;
+  return miss ? ["warn", "GAPS"] : ["pass", "RAN"];
+}
+function spans(nums) {  // [4,5,6,9] -> "4-6, 9"
+  const out = []; nums.forEach((n) => { const last = out[out.length - 1]; if (last && n === last[1] + 1) last[1] = n; else out.push([n, n]); });
+  return out.map(([a, b]) => a === b ? String(a) : `${a}-${b}`).join(", ");
+}
+function drawRunit() {
+  const e = runitByTab.get(session), ul = $("checks"); if (!e) return;
+  const r = e.result, [cls, word] = runitTag(r);
+  const li = el("li", "ck"); li.append(el("span", `vt verdict-tag ${cls}`, word),
+    el("span", null, r.status === "ran" ? `run-it: ${r.summary}` : `run-it: ${r.reason}`)); ul.append(li);
+  Object.entries(r.files).forEach(([file, states]) => {
+    const miss = states.filter((x) => x.state === "miss").map((x) => x.line), hit = states.length - miss.length;
+    const row = el("li", `fd ${miss.length ? "" : "warning"}`); row.tabIndex = 0;
+    row.append(el("b", null, file), document.createTextNode(` ${hit} run` + (miss.length ? `, never run: ${spans(miss)}` : "")));
+    const go = () => { pendingReveal = { path: `${e.root}/${file}`, line: miss[0] || states[0].line }; openFile(relOf(`${e.root}/${file}`)); };
+    row.onclick = go; row.onkeydown = (ev) => { if (ev.key === "Enter") go(); }; ul.append(row);
+  });
+  if (r.tail) { const t = el("li", "fd"); t.textContent = r.tail.split("\n").slice(-3).join(" · "); ul.append(t); }
+}
+function coverageFor(path) {
+  const e = runitByTab.get(session); if (!e) return [];
+  const target = absOf(path);
+  for (const [file, states] of Object.entries(e.result.files)) if (`${e.root}/${file}` === target) return states;
+  return [];
+}
+function runitFinished(e) {
+  runitByTab.set(session, e); drawChecks(); setLive(false, e.result.status === "ran" ? `run-it: ${e.result.summary}` : "run-it not run");
+  const f = openFiles.get(activeFile); if (f && f.kind === "file") showFile(activeFile);
+}
+function showLineInfo(path, line) {
+  const box = $("lineinfo"), st = coverageFor(path).find((x) => x.line === line);
+  if (!st) { box.hidden = true; return; }
+  box.replaceChildren(); const x = el("button", "iconbtn x", "×"); x.type = "button"; x.onclick = () => box.hidden = true; box.append(x);
+  if (st.state === "miss") box.append(el("div", null, `line ${line}: no test ran this line`));
+  else if (!st.tests.length) box.append(el("div", null, `line ${line}: ran while the module was imported, outside any test`));
+  else {
+    box.append(el("div", null, `line ${line} ran in ${st.tests.length} test${st.tests.length === 1 ? "" : "s"}:`));
+    st.tests.slice(0, 8).forEach((t) => { const row = el("div", "t"), b = el("button", "iconbtn", "trace"); b.type = "button";
+      b.title = "Run this test alone and list the calls it makes, with argument values";
+      b.onclick = () => { setLive(true, "tracing " + t); send({ type: "prompt", text: "/trace " + t }); box.hidden = true; };
+      row.append(el("span", null, t), b); box.append(row); });
+  }
+  box.hidden = false;
+}
+function traceFinished(e) {
+  const r = e.result, box = $("result"); box.replaceChildren();
+  const ok = r.status === "ran" && r.passed;
+  const kicker = el("div", "kicker"); kicker.append(el("span", `verdict-tag ${ok ? "pass" : "kill"}`, r.status === "ran" ? (r.passed ? "TRACE · PASSED" : "TRACE · TEST FAILED") : "TRACE · " + r.status.toUpperCase()), el("span", null, clock("Europe/Oslo") + " Oslo"));
+  box.append(kicker, el("h3", null, r.test));
+  if (r.status !== "ran") box.append(el("p", null, r.reason));
+  const changed = new Set(Object.keys((runitByTab.get(session) || { result: { files: {} } }).result.files));
+  const ul = el("ul", "trace");
+  r.calls.forEach((c) => {
+    const li = el("li", changed.has(c.file) ? "chg" : ""); li.title = `${c.file}:${c.line}`;
+    li.append("  ".repeat(c.depth), el("b", null, c.function), "(", el("em", null, Object.entries(c.args).map(([k, v]) => `${k}=${v}`).join(", ")), ")  ", el("small", null, `${c.file}:${c.line}`));
+    li.onclick = () => { pendingReveal = { path: `${e.root}/${c.file}`, line: c.line }; openFile(relOf(`${e.root}/${c.file}`)); };
+    ul.append(li);
+  });
+  if (!r.calls.length && r.status === "ran") ul.append(el("li", null, "no calls into the repo were recorded"));
+  box.append(ul);
+  if (r.skipped) box.append(el("p", null, `${r.skipped} deeper or later call(s) left out (caps: depth 12, 400 calls)`));
+  if (r.tail) { const pre = el("pre"); pre.textContent = r.tail; box.append(pre); }
+  setLive(false, "traced"); setView("result");
+}
+$("runit").onclick = () => { setLive(true, "running the tests under coverage"); send({ type: "prompt", text: "/runit" }); };
+function checksStarted(e) { setLive(true, `checking ${e.files.length} file${e.files.length === 1 ? "" : "s"}`); $("checksum").textContent = "running"; }
+function checksFinished(e) {
+  checksByTab.set(session, e); drawChecks(); if (turn) turn.checks = checkSummary(e);
+  setLive(false, checkSummary(e) || "checked");
+  const f = openFiles.get(activeFile); if (f && f.kind === "file") markFindings(f.path);
+}
+let decorations = [];
+function markFindings(path) {
+  if (!editor || !window.monaco) return;
+  const marks = findingsFor(path);
+  const cov = coverageFor(path).map((st) => ({ range: new monaco.Range(st.line, 1, st.line, 1),
+    options: { linesDecorationsClassName: st.state === "hit" ? "cov-hit" : "cov-miss" } }));
+  if (cov.length && !editor._covClick) { editor._covClick = true; editor.onMouseDown((ev) => { const p = ev.target.position; if (p) showLineInfo(path, p.lineNumber); }); }
+  decorations = editor.deltaDecorations(decorations, cov.concat(marks.filter((m) => m.line > 0).map((m) => ({
+    range: new monaco.Range(m.line, 1, m.line, 1),
+    options: { isWholeLine: true, glyphMarginClassName: m.severity === "warning" ? "gm-warn" : "gm-err", className: m.severity === "warning" ? "ln-warn" : "ln-err",
+      glyphMarginHoverMessage: { value: `${m.check}: ${m.message}` }, hoverMessage: { value: `${m.check}: ${m.message}` } } }))));
+  if (pendingReveal && pendingReveal.path === absOf(path)) { editor.revealLineInCenter(pendingReveal.line || 1); editor.setPosition({ lineNumber: pendingReveal.line || 1, column: 1 }); pendingReveal = null; }
+}
+function revealPending(path, pre) {
+  if (!pendingReveal || pendingReveal.path !== absOf(path)) return;
+  const row = pre.children[(pendingReveal.line || 1) - 1]; pendingReveal = null;
+  if (row) requestAnimationFrame(() => row.scrollIntoView({ block: "center" }));
+}
+
 /* ---------------- outputs: every finished turn leaves a result card ---------------- */
 function recordOutput(e) {
   // A turn already running when the page connected has no TurnStarted here: use the last prompt.
@@ -658,7 +816,7 @@ function recordOutput(e) {
   const tag = e.reason === "done" ? (turn.errors ? "kill" : "pass") : "kill";
   const card = { tab: session, time: clock("Europe/Oslo"), prompt: turn.prompt, verdict: first || `turn ended: ${e.reason}`,
     tag, label: e.reason === "done" ? (turn.errors ? "DONE, ERRORS" : "DONE") : e.reason.toUpperCase(),
-    tools: turn.tools, errors: turn.errors, files: [...turn.files], text };
+    tools: turn.tools, errors: turn.errors, files: [...turn.files], checks: turn.checks || "", text };
   const list = outputs.get(session) || []; list.unshift(card); outputs.set(session, list.slice(0, 30));
   drawOutputs(); turn = null;
   const n = $("vresult").querySelector(".n") || $("vresult").appendChild(el("span", "n"));
@@ -683,6 +841,7 @@ function openOutput(o) {
   row("asked", o.prompt.length > 160 ? o.prompt.slice(0, 160) + "…" : o.prompt);
   row("tool calls", o.tools === null ? "not counted: the turn began before this page connected" : `${o.tools}${o.errors ? `, ${o.errors} failed` : ""}`);
   row("files", o.files.length ? `${o.files.length} written` : "none written");
+  if (o.checks) row("checks", o.checks);
   const files = el("div", "files");
   o.files.forEach((p) => { const b = el("button", null, p); b.type = "button"; b.onclick = () => openFile(p); files.append(b); });
   box.append(kicker, el("h3", null, o.verdict), ul);
@@ -938,6 +1097,9 @@ function loadState(s) {
   setTouched(s.touched); $("treeroot").replaceChildren(); send({ type: "tree", path: "" });
   setTodos(s.todos); setPlan(s.plan); setMcp(s.mcp); setBusy(s.busy); setUsage(s.usage);
   drawMods(s.mods || []);
+  if (s.checks) checksByTab.set(session, s.checks); else checksByTab.delete(session);
+  if (s.runit) runitByTab.set(session, s.runit); else runitByTab.delete(session);
+  drawChecks();
   drawOutputs(); const n = $("vresult").querySelector(".n"); if (n) n.remove();
   if ((outputs.get(session) || []).length) $("vresult").appendChild(el("span", "n", String(outputs.get(session).length)));
   approvals.length = 0; s.approvals.forEach((a) => approvals.push(a)); showApproval();
@@ -957,6 +1119,10 @@ const handlers = {
   TextDelta: (e) => { reasoning = null; assistantText(e.text); },
   ReasoningDelta: (e) => reasoningText(e.text),
   ToolArgsDelta: argsDelta,
+  ChecksStarted: checksStarted,
+  ChecksFinished: checksFinished,
+  RunItFinished: runitFinished,
+  TraceFinished: traceFinished,
   ToolStarted: (e) => { if (streaming.size) endStreams(); toolStarted(e.tool_use_id, e.name, e.input, true); },
   ToolFinished: (e) => toolFinished(e.tool_use_id, e.content, e.is_error, true),
   HookBlocked: (e) => note("block", `[${e.event} hook blocked] ${e.reason}`),
@@ -1068,7 +1234,8 @@ const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["age
   ["mcp", "servers and tools"], ["jev", "ask Jev for a logged vote"], ["mode", "ask / accept edits / plan"], ["model", "switch model"],
   ["models", "list models"], ["think", "show thinking on/off"], ["permissions", "file, shell, web rules"], ["hooks", "loaded hooks"],
   ["skills", "loaded skills"], ["memory", "memory files"], ["resume", "resume a session"], ["init", "write a project note"],
-  ["commands", "all commands"], ["clear", "clear the history"], ["help", "help"]];
+  ["commands", "all commands"], ["check", "lint + type-check changed files"], ["runit", "which changed lines tests run"],
+  ["trace", "calls one test makes"], ["clear", "clear the history"], ["help", "help"]];
 const input = $("input"), menu = $("menu"); let sel = 0, shown = [];
 SLASH.slice(0, 7).forEach(([c]) => { const b = el("button", null, "/" + c); b.type = "button"; b.onclick = () => { input.value = "/" + c; input.focus(); drawMenu(); }; $("slashbar").append(b); });
 function drawMenu() {

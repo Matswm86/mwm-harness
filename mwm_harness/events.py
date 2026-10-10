@@ -138,6 +138,35 @@ class FilesTouched(Event):
 
 
 @dataclass
+class ChecksStarted(Event):
+    files: list[str]
+
+
+@dataclass
+class ChecksFinished(Event):
+    """Compile, lint and type-check results for the files a turn changed (``checks.py``)."""
+
+    root: str
+    results: list[dict[str, Any]]
+
+
+@dataclass
+class RunItFinished(Event):
+    """Changed-line coverage from ``runit.changed_coverage``: which new lines a test ran."""
+
+    root: str
+    result: dict[str, Any]
+
+
+@dataclass
+class TraceFinished(Event):
+    """The calls one test made into the repo, with argument values (``runit.trace_test``)."""
+
+    root: str
+    result: dict[str, Any]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 

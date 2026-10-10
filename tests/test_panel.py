@@ -209,3 +209,25 @@ def test_the_mic_clip_is_transcribed_and_bad_clips_are_refused(make_session):
         assert "base64" in until(ws, "Transcript")[-1]["error"]
         ws.send_json({"type": "transcribe"})
         assert "no audio" in until(ws, "Transcript")[-1]["error"]
+
+
+def test_check_results_reach_the_page_and_stay_in_the_tab_state(make_session):
+    turns = [
+        chunks_for(tool_calls=[("Write", {"file_path": "bad.py", "content": "def f(:\n"})]),
+        chunks_for("Written."),
+    ]
+    session, _, _ = make_session(turns, mode="acceptEdits")
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "prompt", "text": "write it"})
+        seen = until(ws, "TurnEnded")
+        finished = next(m for m in seen if m["type"] == "ChecksFinished")
+        syntax = next(r for r in finished["results"] if r["check"] == "py_compile")
+        assert syntax["findings"][0]["file"] == "bad.py"
+        ws.send_json({"type": "state"})
+        state = until(ws, "State")[-1]
+        assert state["checks"]["results"] == finished["results"]
+        assert state["runit"] is None

@@ -17,6 +17,7 @@ from typing import Any
 
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
+from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
 from mwm_harness.config import ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.hooks import HookEngine, load_registrations
@@ -31,6 +32,15 @@ from mwm_harness.messages import (
 from mwm_harness.observation_pack import pack_observations
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
+from mwm_harness.runit import (
+    RunItResult,
+    TraceResult,
+    changed_coverage,
+    git_changed,
+    is_test_file,
+    trace_test,
+)
+from mwm_harness.runit import as_dict as runit_dict
 from mwm_harness.sandbox import Sandbox
 from mwm_harness.skills import (
     Command,
@@ -91,6 +101,7 @@ def reminder(text: str) -> str:
 
 # Tool names the fix-cycle brake treats as changing code and as looking at something.
 EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
+WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})  # file_path tools the check runner follows
 LOOK_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"})
 
 
@@ -189,6 +200,7 @@ class Session:
         self.hooks.permission_mode = self.permissions.mode
         self.plan = ""
         self.touched: list[str] = []
+        self.written: list[Path] = []  # files this turn wrote, for the check runner
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -476,6 +488,7 @@ class Session:
         self._stuck = False
         self._blind_fixes = 0
         self._edited_since_run = False
+        self.written: list[Path] = []
         while True:
             cap = self.settings.max_requests_per_turn
             if cap and requests >= cap:
@@ -559,6 +572,7 @@ class Session:
                             + ("; the next request compacts" if self.settings.auto_compact else ""),
                         )
                     )
+                await self.run_checks()
                 return self._end("done", message.text())
             stop_blocks += 1
             self.bus.emit(ev.HookBlocked("Stop", outcome.reason))
@@ -569,6 +583,7 @@ class Session:
                         f"Stop hooks blocked {stop_blocks} times; the last answer stands unfixed",
                     )
                 )
+                await self.run_checks()
                 return self._end("stop_blocks_exhausted", message.text())
             self._add(Message("user", f"Stop hook feedback:\n{outcome.reason}", is_meta=True))
 
@@ -734,6 +749,10 @@ class Session:
             self.bus.emit(ev.TodosUpdated(list(self.tool_ctx.todos)))
         if name in ("Read", "Write", "Edit") and not result.is_error:
             self._touch(str(tool_input.get("file_path") or ""))
+        if name in WRITE_TOOLS and not result.is_error:
+            path = self.tool_ctx.resolve(str(tool_input.get("file_path") or ""))
+            if path not in self.written:
+                self.written.append(path)
 
         post = await self.hooks.run(
             "PostToolUse",
@@ -750,6 +769,43 @@ class Session:
             joined = "\n\n".join(f for f in feedback if f)
             note = reminder("PostToolUse hook feedback:\n" + joined)
             result = ToolResult(f"{result.content}\n\n{note}", result.is_error)
+        return result
+
+    async def run_checks(self, files: list[Path] | None = None) -> list[CheckResult]:
+        """Compile/lint/type-check ``files`` (default: what this turn wrote) and report it."""
+        files = self.written if files is None else files
+        if not files or (files is self.written and not self.settings.checks_after_turn):
+            return []
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        self.bus.emit(ev.ChecksStarted([str(p) for p in files]))
+        try:
+            results = await run_checks(root, files)
+        except CheckConfigError as exc:
+            self.bus.emit(ev.Notice("error", f"checks not run: {exc}"))
+            return []
+        self.bus.emit(ev.ChecksFinished(str(root), as_dicts(results)))
+        return results
+
+    async def changed_files(self) -> list[Path]:
+        """What the last editing turn wrote, else what git reports changed or new."""
+        if self.written:
+            return list(self.written)
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        return await asyncio.to_thread(git_changed, root)
+
+    async def run_it(self, pytest_args: list[str] | None = None) -> RunItResult:
+        """Run the tests under coverage and report which changed lines they executed."""
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        files = [p for p in await self.changed_files() if not is_test_file(p)]
+        self.bus.emit(ev.Notice("info", f"run-it: running the tests for {len(files)} file(s)"))
+        result = await changed_coverage(root, files, pytest_args)
+        self.bus.emit(ev.RunItFinished(str(root), runit_dict(result)))
+        return result
+
+    async def trace(self, test: str) -> TraceResult:
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        result = await trace_test(root, test)
+        self.bus.emit(ev.TraceFinished(str(root), runit_dict(result)))
         return result
 
     async def _approve(self, name: str, tool_input: dict[str, Any], reason: str) -> bool:
