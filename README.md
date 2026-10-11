@@ -1,19 +1,52 @@
 # MWM Harness
 
-![Design mockup of the MWM Harness command center: status strip with model, context meter and permissions; left rail with agents, jobs, tasks, MCP servers and machines; a 3D scene of the agent and its servers above a live code view; a read-only MNQ chart and the chat on the right](docs/command-center.png)
+A personal agent harness for Qwen, Kimi and GLM models on any OpenAI-compatible
+endpoint, in the mould of Claude Code and Qwen Code: a coding agent on models of
+your choosing, behind permissions, a sandbox and hooks you control. One core
+library, two thin front-ends on the same session. `mwm --open` shows the
+browser panel (files, code and diffs, tasks, plan, checks, token meter); `mwm`
+alone is a terminal prompt with the same slash commands. Work in progress: run
+against local models only so far.
 
-*The phase 8 command center design ([mockup](docs/design/command-center.html), sample data). The panel that runs today is [this one](docs/panel.png).*
+## What it does
 
-A personal agent harness for Qwen, Kimi and GLM models, in the mould of Claude
-Code and Qwen Code: one core library, two thin front-ends on the same session.
-`mwm --open` shows the browser panel above (files, code and diffs, tasks, plan,
-token meter); `mwm` alone is a terminal prompt with the same slash commands.
+- Runs a coding-agent loop with file, shell, web fetch and web search tools,
+  behind four permission modes, a hard deny list and a bubblewrap shell sandbox
+  that has no network unless a call asks for it.
+- Reuses what you already have for Claude Code: hook scripts, `.mcp.json` MCP
+  servers, `SKILL.md` skills, command files and subagent files.
+- Strips secrets (keys, tokens, `.env` values) from every tool result before
+  the model, the panel or the transcript see it.
+- Shows the work in a local browser panel: the code as the model writes it, a
+  diff before each approval, lint and type-check marks after each edit, a
+  view of which changed lines a test ran, tabs, voice input and a STOP ALL
+  button.
+- Puts back the files of the last turn with `/undo`, and says which harness
+  layer failed in a session with `/postmortem`.
+- Compacts and resumes long sessions and runs subagents on a per-agent model.
+- Ships reasoning playbooks, a critic agent and an eval of 52 cases
+  (`mwm-eval`).
 
-> **Work in progress.** Phases 1 to 7 are built. The first runs against a live
-> model happened on a local 4B model behind Ollama: it fixed a bug through
-> Read, Edit and Bash behind approval prompts. The three hosted target models
-> have not been run yet. The terminal front-end is a plain prompt today and is
-> being rebuilt (phase 8). Nothing here is stable.
+## How it works
+
+A Python core library (3.12 or newer) holds the message model, the turn loop,
+the tools, permissions, hooks and the MCP client. The terminal prompt and the
+browser panel are thin front-ends that listen to one event bus and call the
+same session. A model is reached through an OpenAI-compatible streaming
+`/chat/completions` endpoint with `httpx`; history is kept as Anthropic-style
+content blocks in a JSON-lines transcript that `--resume` rebuilds from. Shell
+commands run inside bubblewrap when it is installed. The panel is a FastAPI
+and uvicorn server with one page and one websocket bound to 127.0.0.1, with
+Monaco for the code view and three.js for the scene. Every test runs offline:
+a scripted provider plays the model and a fake stdio server plays MCP.
+
+## Status
+
+Version 0.1.0, work in progress, nothing stable. Phases 1 to 7 of the roadmap
+below are built. The first runs against a live model happened on a local 4B
+model behind Ollama: it fixed a bug through Read, Edit and Bash behind approval
+prompts. The three hosted target models have not been run yet, and the
+terminal front-end is still the plain prompt that phase 8 is to rebuild.
 
 ## Roadmap
 
@@ -34,8 +67,8 @@ Each phase closes on a test, not on a date.
 Where each phase stands: 1 to 6 are closed. 0 is half closed: six local models
 passed the parallel tool-call spike (`COMPAT.md`), the hosted models wait on a
 key. 2 closed on a local model. 7 is built, its closing tests need a hosted
-model. 8 has not started. The panel renders only paragraphs, fenced code and
-inline code in answers: no headings, lists, bold or links yet.
+model. 8 has not started. The panel renders only paragraphs, fenced code,
+inline code and bold in answers: no headings, lists or links yet.
 
 ## State
 
@@ -110,27 +143,32 @@ stdio server plays MCP, a mocked transport plays the web.
   slash commands with `$ARGUMENTS` and `$1`..`$9` filled in.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
-  /commands /plan /files /open /agents /jev /compact /init /resume /clear /quit`, plus one per command file and per skill.
+  /commands /plan /files /open /agents /jev /postmortem /undo /hw /check /runit
+  /trace /compact /init /resume /tab /clear /quit`, plus one per command file and per skill.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
-  stream) prints dimmed as it arrives; `/think off` hides it.
+  stream) prints dimmed as it arrives; `/think off` hides it. Every printed
+  block carries its local time, and every event and message a UTC stamp.
   `mwm -p "question"` runs one headless turn; `--no-mcp` and `--no-hooks` exist.
 - `web/server.py`, `web/static/index.html`: the browser panel, `mwm --web`, in
   the dark command-center layout. One page, one websocket, the same `Session` as
   the terminal. A status strip (model, permission mode, context share, tokens in,
-  out and cached, request count, shell sandbox, Oslo and New York clocks, the
-  trading session and Topstep's 16:10 ET flatten countdown); a left rail with
-  agents, finished-turn results, the task list, the last plan, MCP servers,
-  touched files and the file tree; a three.js scene in the middle (the agent as
-  a sun, MCP servers and subagents in orbit, a pulse per MCP call, the file being
-  written as a satellite, the Oslo trading day as the outer ring); a code pane
-  under it that shows each Edit and Write as it is proposed and keeps a result
-  card per finished turn; the chat on the right with approval cards (`y`, `a`,
-  `n`; Esc stops a turn). Above the chat, an MNQ candle chart (5 or 1 minute,
-  Oslo time, refreshed every 20 s) from TopstepX's read-only bars endpoint, with
-  Yahoo NQ=F as a fallback marked delayed; credentials come from
-  `PROJECT_X_USERNAME` / `PROJECT_X_API_KEY` or the file in the `chart_env_file`
-  setting and never reach the page. Background jobs, machines, handoffs and
-  MASTER_TODO have a place in the layout and no data source yet.
+  out and cached, request count, shell sandbox, CPU and GPU load and temperature,
+  Oslo and New York clocks, the trading session, Topstep's 16:10 ET flatten
+  countdown and a STOP ALL button); a left rail with agents, finished-turn
+  results, check results, the task list, the last plan, MCP servers, this
+  machine's sensors, touched files, the file tree, the session and the newest
+  handoffs; a three.js scene in the middle (the agent as a sun, MCP servers and
+  subagents in orbit, a pulse per MCP call, the file being written as a
+  satellite, the Oslo trading day as the outer ring); a code pane under it that
+  types each Edit and Write as the model writes it (the call's arguments
+  stream in) and keeps a result card per finished turn; the chat on the right
+  with approval cards (`y`, `a`, `n`; Esc stops a turn). Above the chat, an MNQ
+  candle chart (5 or 1 minute, Oslo time, refreshed every 20 s) from TopstepX's
+  read-only bars endpoint, with Yahoo NQ=F as a fallback marked delayed;
+  credentials come from `PROJECT_X_USERNAME` / `PROJECT_X_API_KEY` or the file
+  in the `chart_env_file` setting and never reach the page. Background jobs, the
+  other machines (docker, timers, VPS) and MASTER_TODO have a place in the
+  layout and no data source yet.
   Voice: the mic button (Alt+M) records in the browser and the panel server
   transcribes on this machine with faster-whisper (`pip install -e .[voice]`;
   the medium model on a CUDA GPU, else the small one on the CPU; settings
@@ -202,10 +240,17 @@ stdio server plays MCP, a mocked transport plays the web.
   never the decider. Every call goes to an append-only log; the real result is
   recorded later and `mwm-jev report` gives the hit rate per domain and label,
   with a Brier score for yes/no questions. The tool asks for approval because
-  the text it judges leaves the machine. Key: `TYPESAFE_API_KEY`. A call that
-  asks only for one option of a closed set goes to Cloudflare's Clef (Workers AI)
-  instead when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set; yes/no
-  and level questions stay on Jev, and a failed Clef call is retried on Jev.
+  the text it judges leaves the machine. Key: `TYPESAFE_API_KEY`. Which model
+  answers (`model = auto`, the default) was set by a bake-off on 2026-10-10: the
+  routing question (one choice over five knowledge-base collections) goes to a
+  local fine-tuned 4B model in Ollama (`MWM_JEV_ROUTE_MODEL` names another; an
+  empty value sends routing to Jev); every other question goes to Jev. When
+  Jev's confidence on a passage-relevance or an answer-check question is under a
+  measured cut-off, Sonnet answers instead, through the workspace's `claude -p`
+  wrapper; `MWM_JEV_ESCALATE=0` turns that off. A call that fails on the local
+  model or on Jev is logged and retried on Cloudflare's Clef (Workers AI) when
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set (a failed local call
+  with no Clef goes to Jev); a caller can also ask for Clef by name.
 - Loop guards found by the first live runs: a turn ends after 60 model requests
   (`max_requests_per_turn`); compaction keeps the prompt size right after a
   summary as a floor and waits for half a budget of growth, because a prompt
@@ -217,6 +262,50 @@ stdio server plays MCP, a mocked transport plays the web.
   run failed with no `Read`, `Grep`, `Glob`, web or `Task` call in between
   (`max_blind_fix_cycles`, default 4). A passing run or any such look resets the
   count.
+- `redact.py`: secret stripping. Every tool result and every hook note is
+  scanned before the model, the panel or the transcript see it. Passwords in
+  connection URLs, bearer tokens, values whose key names a secret, known key
+  shapes (cloud, Git hosting, chat, payment and model-provider keys, PEM blocks,
+  JWTs) and high-entropy values become `[redacted:<key or shape>]`; the values
+  of secret-named entries in `secrets.env`, in the project's `.env*` files and in
+  the workspace's per-project `.env` files are masked wherever they appear. The
+  text rules are a Python port of the redaction package of Shrike (MIT). When
+  the redactor itself fails the output is withheld, not passed on.
+  `redact = false` switches it off, `redact_extra_patterns` adds regexes.
+- `checks.py`, `runit.py`, `trace_plugin.py`: after a turn that wrote files, the
+  check chain of `checks.default.toml` (py_compile, ruff, mypy, `node --check`,
+  `bash -n`, shellcheck, gdlint) runs on those files with no model call. A
+  repo's `.mwm/checks.toml`, else the config folder's `checks.toml`, replaces the
+  chain; a missing tool is reported as not run, never as a pass;
+  `checks_after_turn = false` switches the automatic run off and `/check` runs
+  it by hand. `/runit [pytest args]` runs the tests under coverage with one
+  context per test and marks each changed line hit (with the tests that ran it)
+  or miss; `/trace TEST` runs one test and lists the calls it made into the repo
+  with their argument values. The panel shows the same in its Checks rail and
+  the code pane (the "run it" button).
+- `undo.py`: `/undo` (the panel's "undo turn" button) puts back the files the
+  newest file-changing turn wrote with `Write` or `Edit`, from a copy taken
+  before each write. It keeps the last 10 turns, leaves a file alone that
+  changed again after the turn and says so, and names the turn's `Bash` calls,
+  whose changes it cannot undo. Emergency stop: the panel's STOP ALL button
+  (Alt+Shift+X, or `/stop all`) cancels every tab's turn, kills their shell
+  commands, refuses open approvals and cancels running test runs.
+- `hardware.py`: `/hw` and the panel's "This machine" rail panel and CPU and GPU
+  chips read CPU load and temperature (`/proc/stat`, hwmon), memory, fans, disk
+  and the NVIDIA GPU (`nvidia-smi`) of the machine the harness runs on. Linux
+  only, no extra packages, read-only; a source that is missing shows as unknown
+  with the reason, never as a guess.
+- `memory_panel.py`: the panel's Handoffs rail panel lists the newest
+  `handoff-*.md` files of the workspace's `memory/` folder with their top
+  heading, searches memory through the workspace's `memory-archive` MCP server
+  and opens a `.md` file inside that folder read-only. Nothing writes to memory.
+- `postmortem.py`: `/postmortem [draft] [ID]` reads a session transcript, sorts
+  every failure it records (tool errors, hook and permission blocks, Stop-gate
+  feedback, cancelled turns, compactions, slow tools) into the harness layer it
+  points at, and writes a report naming the kind of fix that keeps it from
+  coming back. `draft` hands the report to the model to write one fix, and every
+  file it writes goes through the normal approval. The panel shows how long each
+  tool call took and marks those over 30 s.
 
 Run against a live model so far: the tool-call spike and a bug-fix task, on
 local models only. Phase 7 closes when a subagent on another model returns and
@@ -275,7 +364,8 @@ permission mode, sandbox, extra writable and readable paths, `bash_env_keep`,
 `max_requests_per_turn`, hook settings files, `mcp_allow`, `mcp_files`,
 `skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
-`hooks.json` (hooks in the `settings.json` format).
+`hooks.json` (hooks in the `settings.json` format), `mods.toml` (the panel's F1-F9
+actions), `checks.toml` (the check chain).
 
 ## Reasoning playbooks, the critic, and the eval
 
