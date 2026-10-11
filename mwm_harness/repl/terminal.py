@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from mwm_harness import events as ev
-from mwm_harness import postmortem
+from mwm_harness import hardware, postmortem
 from mwm_harness.config import ModelSpec
 from mwm_harness.jev import format_report, report
 from mwm_harness.loop import Session
@@ -47,6 +47,7 @@ HELP = """\
 /jev                  Jev's decision log: calls, known outcomes, hit rate per domain
 /postmortem [draft] [ID]  which harness layer failed this session (or session ID); draft = model writes one fix as a draft
 /undo                 put back the files the last file-changing turn wrote (Write/Edit only)
+/hw                   CPU and GPU temperature and load, memory, fans, disk of this machine
 /check                compile, lint and type-check the changed files (also runs after each editing turn)
 /runit [pytest args]  run the tests under coverage: which changed lines did a test execute
 /trace TEST           run one test (pytest node id) and list the calls it made, with argument values
@@ -100,6 +101,15 @@ and write AGENTS.md in the project root: what the project is, how to build, test
 would get wrong. Under 60 lines, facts only, nothing generic. If AGENTS.md exists, improve it."""
 
 
+_MONITOR: list[hardware.HardwareMonitor] = []
+
+
+def _monitor() -> hardware.HardwareMonitor:
+    if not _MONITOR:
+        _MONITOR.append(hardware.HardwareMonitor())
+    return _MONITOR[0]
+
+
 async def run_async_command(session: Session, text: str, out: Any) -> bool:
     """Slash commands that have to await something. Returns True when ``text`` was one."""
     name, _, argument = text.partition(" ")
@@ -114,6 +124,10 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
     if name == "/undo":
         for row in session.undo().lines():
             out.line(row)
+        return True
+    if name == "/hw":
+        for row in hardware.summary_lines(await _monitor().snapshot()):
+            out.line(row, stamp=False)
         return True
     if name == "/check":
         files = await session.changed_files()

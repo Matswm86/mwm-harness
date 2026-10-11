@@ -34,7 +34,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mwm_harness import events as ev
-from mwm_harness.config import ModelSpec, config_dir
+from mwm_harness.config import ModelSpec, config_dir, workspace_root
+from mwm_harness.hardware import HardwareMonitor
 from mwm_harness.loop import Session
 from mwm_harness.mcp_client import McpError, McpManager
 from mwm_harness.memory_panel import MemorySearch, OutsideMemory, list_handoffs, read_memory
@@ -634,6 +635,7 @@ class Panel:
         )
         self.voice_warming: asyncio.Task[None] | None = None
         self.memory = MemorySearch(session.cwd)
+        self.hardware = HardwareMonitor(workspace_root())
         self.factory = factory or session.sibling
         self.clients: set[asyncio.Queue[dict[str, Any]]] = set()
         self.tabs: dict[str, Tab] = {}
@@ -741,6 +743,8 @@ class Panel:
             reply.put_nowait(await self.transcribe(message))
         elif kind in ("handoffs", "memory_search", "memory_open"):
             reply.put_nowait(await self.memory_reply(kind, message))
+        elif kind == "hardware":
+            reply.put_nowait(await self.hardware.snapshot())
         elif kind == "bars":
             minutes = message.get("minutes")
             reply.put_nowait(

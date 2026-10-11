@@ -116,6 +116,17 @@ dialog.newtab button.go{background:var(--cyan);border-color:var(--cyan);color:#0
 .rail .msearch{padding:0 10px 6px 12px}
 .rail .msearch input{width:100%;box-sizing:border-box;background:#070b14;border:1px solid var(--line-hi);border-radius:6px;padding:5px 8px;color:var(--text);font:11px var(--mono)}
 .rail .msearch input:focus{outline:1px solid var(--gold);border-color:var(--gold)}
+.hwchip b.warn,.hw .warn{color:var(--gold)} .hwchip b.hot,.hw .hot{color:var(--alert)}
+.hw{padding:0 10px 8px 12px;display:grid;gap:7px;font:11px var(--mono)}
+.hw .row{display:grid;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:6px}
+.hw .row>b{color:var(--muted);font-weight:500}
+.hw .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden}
+.hw .bar i{display:block;height:100%;width:0;background:var(--cyan);transition:width .4s}
+.hw .bar i.warn{background:var(--gold)} .hw .bar i.hot{background:var(--alert)}
+.hw .row .sub{grid-column:2/4} .hw .sub{color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hw .row svg{grid-column:2/4} .hw svg{width:100%;height:22px;display:block;background:rgba(255,255,255,.03);border-radius:3px}
+.hw svg polyline{fill:none;stroke-width:1.2;vector-effect:non-scaling-stroke}
+.hw .miss{color:var(--faint)}
 .rail li.hit{grid-template-columns:10px minmax(0,1fr) auto;align-items:start}
 .rail li.hit .sn{grid-column:2/4;color:var(--muted);font-size:10px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .rail li small.old{color:var(--alert)}
@@ -326,6 +337,8 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <span class="chip" title="Tokens this session">in <b id="tin">0</b> · out <b id="tout">0</b> · cached <b id="tcached">0</b></span>
     <span class="chip" title="Model requests this session">requests <b id="reqs">0</b></span>
     <span class="chip" id="sandbox" title="Shell sandbox">shell sandbox <b>?</b></span>
+    <span class="chip hwchip" id="hwcpu" title="CPU load and package temperature of this machine">CPU <b>--</b></span>
+    <span class="chip hwchip" id="hwgpu" title="GPU load and temperature of this machine">GPU <b>--</b></span>
     <span class="grow"></span>
     <span title="MNQ, last trade of the chart feed">MNQ <span class="px" id="mnqpx">--</span> <span id="mnqd"></span></span>
     <span>Oslo <b id="oslo">--:--</b> · ET <b id="et">--:--</b></span>
@@ -344,6 +357,7 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <details open><summary>Tasks <em id="tasksum"></em></summary><ul id="tasks"></ul></details>
     <details><summary>Plan <em id="plansum">none</em></summary><div class="note" id="plan"></div></details>
     <details open><summary>MCP servers <em id="mcpsum"></em></summary><ul id="mcp"></ul></details>
+    <details open id="hwbox"><summary>This machine <em id="hwsum"></em></summary><div class="hw" id="hw"><span class="miss">reading sensors</span></div></details>
     <details><summary>Touched files <em id="touchsum">0</em></summary><ul id="touched"></ul></details>
     <details open class="tree"><summary>Files <em id="cwdname"></em></summary><ul id="treeroot"></ul></details>
     <details><summary>Session <em id="sid"></em></summary><div class="note" id="sessinfo"></div></details>
@@ -352,7 +366,7 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
       <ul id="handoffs"></ul>
     </details>
     <details><summary>Not wired yet <em>3</em></summary>
-      <div class="note">Background jobs, machines (docker, timers, VPS) and MASTER_TODO have a place in the design and no data source yet.</div>
+      <div class="note">Background jobs, the other machines (docker, timers, VPS) and MASTER_TODO have a place in the design and no data source yet.</div>
     </details>
   </nav>
 
@@ -1014,6 +1028,69 @@ $("msearch").onsubmit = (ev) => { ev.preventDefault(); memoryQuery = $("mquery")
 $("mquery").addEventListener("input", () => { if (!$("mquery").value.trim() && memoryQuery) { memoryQuery = ""; send({ type: "handoffs" }); } });
 $("handoffbox").addEventListener("toggle", () => { if ($("handoffbox").open && !memoryQuery) send({ type: "handoffs" }); });
 
+/* ---------------- this machine: CPU / GPU temperature and load, memory, fans, disk ---------------- */
+const HW_KEEP = 100;                                       // samples kept for the sparklines (5 min at 3 s)
+const hwHist = { cpu: [], cput: [], gpu: [], gput: [] };
+let hwTimer = null;
+function hwPush(key, v) { const a = hwHist[key]; a.push(v == null ? null : v); if (a.length > HW_KEEP) a.shift(); }
+function hwBar(pct, lvl) { const b = el("span", "bar"), i = el("i", lvl && lvl !== "ok" ? lvl : null); i.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`; b.append(i); return b; }
+function hwSpark(series) {                                 // [[values, colour, max]] on one 0..max scale each
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", `0 0 ${HW_KEEP - 1} 22`); svg.setAttribute("preserveAspectRatio", "none");
+  series.forEach(([vals, colour, max]) => {
+    const pts = vals.map((v, i) => v == null ? null : `${i + HW_KEEP - vals.length},${(21 - 20 * Math.min(v, max) / max).toFixed(1)}`).filter(Boolean);
+    if (pts.length < 2) return;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline"); line.setAttribute("points", pts.join(" ")); line.setAttribute("stroke", colour); svg.append(line);
+  });
+  const tip = document.createElementNS("http://www.w3.org/2000/svg", "title"); tip.textContent = "last 5 minutes: cyan = load %, gold = temperature °C"; svg.append(tip);
+  return svg;
+}
+function hwRow(label, text, pct, lvl, sub, tip) {
+  const row = el("div", "row"); row.title = tip || "";
+  row.append(el("b", null, label), hwBar(pct, lvl), el("span", lvl && lvl !== "ok" ? lvl : null, text));
+  if (sub) row.append(el("span", "sub", sub));
+  return row;
+}
+function deg(v) { return v == null ? "?" : `${Math.round(v)}°`; }
+function gib(n) { return (n / 2 ** 30).toFixed(1); }
+function setHwChip(id, util, temp, lvl) {
+  const b = $(id).querySelector("b"); b.textContent = `${util == null ? "?" : Math.round(util)}% ${deg(temp)}`; b.className = lvl === "ok" || lvl === "unknown" ? "" : lvl;
+}
+function drawHardware(e) {
+  const box = $("hw"), cpu = e.cpu, mem = e.memory, gpu = (e.gpus || [])[0];
+  hwPush("cpu", cpu.util); hwPush("cput", cpu.temp); hwPush("gpu", gpu ? gpu.util : null); hwPush("gput", gpu ? gpu.temp : null);
+  box.replaceChildren();
+  const [cw, ch] = e.levels.cpu, [gw, gh] = e.levels.gpu;
+  box.append(hwRow("CPU", `${cpu.util == null ? "?" : Math.round(cpu.util)}% · ${deg(cpu.temp)}`, cpu.util, cpu.level,
+    `${cpu.threads} threads · ${cpu.mhz || "?"} MHz · hottest core ${deg(cpu.hottest_core)} · load ${cpu.load.map((v) => v.toFixed(1)).join(" ")}`,
+    `${cpu.model}\npackage ${deg(cpu.temp)} (${cpu.sensor || "no sensor"}); gold from ${cw}°, red from ${ch}° (Intel laptop chips throttle at 100°)`));
+  box.lastChild.append(hwSpark([[hwHist.cpu, "var(--cyan)", 100], [hwHist.cput, "var(--gold)", 105]]));
+  (e.gpus || []).forEach((g, n) => {
+    const vram = g.mem_total ? 100 * g.mem_used / g.mem_total : 0;
+    box.append(hwRow(n ? `GPU${n}` : "GPU", `${g.util == null ? "?" : Math.round(g.util)}% · ${deg(g.temp)}`, g.util, g.level,
+      `${g.power == null ? "?" : Math.round(g.power)} W${g.power_limit ? ` of ${Math.round(g.power_limit)}` : ""} · ${g.clock_mhz || "?"} MHz${g.fan == null ? "" : ` · fan ${g.fan}%`}`,
+      `${g.name}\ngold from ${gw}°, red from ${gh}°`));
+    if (!n) box.lastChild.append(hwSpark([[hwHist.gpu, "var(--cyan)", 100], [hwHist.gput, "var(--gold)", 105]]));
+    const holders = (e.gpu_apps || []).map((a) => `${a.name} ${Math.round(a.mem || 0)}`).join(" · ");
+    box.append(hwRow("VRAM", `${Math.round(g.mem_used || 0)}/${Math.round(g.mem_total || 0)} MiB`, vram, vram > 92 ? "warn" : "ok", holders || "no process holds VRAM",
+      (e.gpu_apps || []).map((a) => `${a.name} (pid ${a.pid}) ${Math.round(a.mem || 0)} MiB`).join("\n")));
+  });
+  if (mem) {
+    const pct = 100 * mem.used / mem.total, swap = mem.swap_total ? 100 * mem.swap_used / mem.swap_total : 0;
+    box.append(hwRow("RAM", `${gib(mem.used)}/${gib(mem.total)} GiB`, pct, pct > 90 ? "hot" : pct > 80 ? "warn" : "ok",
+      `swap ${gib(mem.swap_used)}/${gib(mem.swap_total)} GiB${swap > 75 ? " (high)" : ""}`));
+  }
+  if (e.disk) { const pct = 100 * e.disk.used / e.disk.total; box.append(hwRow("Disk", `${gib(e.disk.used)}/${gib(e.disk.total)} GiB`, pct, pct > 90 ? "hot" : pct > 80 ? "warn" : "ok", e.disk.path)); }
+  const fans = (e.sensors || []).flatMap((c) => c.fans.map((f) => `${f.label} ${f.rpm}`)), hot = (e.sensors || []).flatMap((c) => c.temps.map((t) => `${c.chip} ${t.label} ${deg(t.c)}`));
+  if (fans.length) box.append(el("span", "sub", `fans rpm: ${fans.join(" · ")}`));
+  const all = el("span", "sub", `${hot.length} sensors (hover)`); all.title = hot.join("\n"); box.append(all);
+  Object.entries(e.missing || {}).forEach(([k, why]) => box.append(el("span", "miss", `${k}: ${why}`)));
+  setHwChip("hwcpu", cpu.util, cpu.temp, cpu.level);
+  if (gpu) setHwChip("hwgpu", gpu.util, gpu.temp, gpu.level); else { $("hwgpu").querySelector("b").textContent = "none"; }
+  const worst = [cpu.level, ...(e.gpus || []).map((g) => g.level)].includes("hot") ? "hot" : [cpu.level, ...(e.gpus || []).map((g) => g.level)].includes("warn") ? "warm" : "";
+  const sum = $("hwsum"); sum.replaceChildren(`${deg(cpu.temp)} / ${gpu ? deg(gpu.temp) : "-"}`); if (worst) { sum.append(" · "); sum.append(el("span", worst === "hot" ? "w" : "g", worst)); }
+}
+function startHardware() { clearInterval(hwTimer); send({ type: "hardware" }); hwTimer = setInterval(() => { if (!document.hidden) send({ type: "hardware" }); }, 3000); }
+
 function drawAgents() {
   const list = $("agents"); list.replaceChildren();
   const waiting = approvals.length > 0;
@@ -1144,6 +1221,7 @@ const handlers = {
   Tree: treeLoaded,
   FileContent: fileContent,
   Handoffs: drawHandoffs,
+  Hardware: drawHardware,
   MemoryHits: drawMemoryHits,
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; if (state) state.mode = e.mode; if (scene) scene.setCore(); },
@@ -1225,7 +1303,7 @@ function send(message) {
 function connect() {
   if (!token) { $("conn").textContent = "no access token: open the address printed by mwm --web"; $("conn").className = "down"; return; }
   ws = new WebSocket(`ws://${location.host}/ws?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; startChart(); send({ type: "handoffs" }); };
+  ws.onopen = () => { retry = 500; session = ""; $("conn").textContent = "connected"; $("conn").className = ""; startChart(); startHardware(); send({ type: "handoffs" }); };
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
     if (e.type === "State" && !session) { session = e.tab || ""; renderSessions(); }
