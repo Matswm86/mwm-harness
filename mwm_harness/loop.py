@@ -32,6 +32,7 @@ from mwm_harness.messages import (
 from mwm_harness.observation_pack import pack_observations
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
+from mwm_harness.redact import WITHHELD, Redactor, describe
 from mwm_harness.runit import (
     RunItResult,
     TraceResult,
@@ -132,6 +133,11 @@ class Session:
         self.settings = settings or Settings()
         self.approver = approver or ev.DenyAll()
         self.bus = bus or ev.EventBus()
+        self.redactor = (
+            Redactor(self.cwd, self.settings.redact_extra_patterns)
+            if self.settings.redact
+            else None
+        )
         self.tools = tools if tools is not None else default_tools(self.settings.web_allow_private)
         self.mcp = mcp
         self.skills = (
@@ -298,7 +304,9 @@ class Session:
         )
         self._report(outcome, "SessionStart")
         if outcome.context:
-            self._add(Message("user", reminder("\n\n".join(outcome.context)), is_meta=True))
+            self._add(
+                Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
+            )
 
     async def close(self, reason: str = "exit") -> None:
         outcome = await self.hooks.run("SessionEnd", reason=reason)
@@ -346,7 +354,9 @@ class Session:
         outcome = await self.hooks.run("PostCompact", trigger=trigger, compact_summary=summary)
         self._report(outcome, "PostCompact")
         if outcome.context:
-            self._add(Message("user", reminder("\n\n".join(outcome.context)), is_meta=True))
+            self._add(
+                Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
+            )
         return summary
 
     # -------------------------------------------------------------- subagents
@@ -479,7 +489,9 @@ class Session:
             self.bus.emit(ev.HookBlocked("UserPromptSubmit", outcome.reason))
             return self._end("error", f"prompt blocked by a hook: {outcome.reason}")
         if outcome.context:
-            self._add(Message("user", reminder("\n\n".join(outcome.context)), is_meta=True))
+            self._add(
+                Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
+            )
         if self.permissions.mode == "plan":
             self._add(Message("user", reminder(PLAN_MODE_NOTE), is_meta=True))
         self._add(Message("user", prompt))
@@ -700,6 +712,39 @@ class Session:
             self._edited_since_run = False
 
     async def _run_one_tool(
+        self, call: Block, argument_error: str | None, force_ask: bool = False
+    ) -> ToolResult:
+        """Run one call; its output (hook feedback included) leaves here with secrets stripped."""
+        result = await self._run_one_tool_raw(call, argument_error, force_ask)
+        if self.redactor is None:
+            return result
+        try:
+            text, counts = self.redactor(result.content)
+        except Exception as exc:  # noqa: BLE001 fail closed: no raw output when the redactor breaks
+            self.bus.emit(
+                ev.Notice("error", f"redaction failed ({type(exc).__name__}): tool output withheld")
+            )
+            return ToolResult(WITHHELD, True)
+        if counts:
+            self.bus.emit(ev.Notice("info", f"{call['name']}: {describe(counts)}"))
+        return ToolResult(text, result.is_error)
+
+    def _clean(self, text: str) -> str:
+        """Hook notes that go to the model: same redaction, same fail-closed rule."""
+        if self.redactor is None:
+            return text
+        try:
+            out, counts = self.redactor(text)
+        except Exception as exc:  # noqa: BLE001 fail closed
+            self.bus.emit(
+                ev.Notice("error", f"redaction failed ({type(exc).__name__}): hook note withheld")
+            )
+            return "[redaction failed: hook note withheld]"
+        if counts:
+            self.bus.emit(ev.Notice("info", f"hook note: {describe(counts)}"))
+        return out
+
+    async def _run_one_tool_raw(
         self, call: Block, argument_error: str | None, force_ask: bool = False
     ) -> ToolResult:
         name, tool_input = call["name"], dict(call["input"])

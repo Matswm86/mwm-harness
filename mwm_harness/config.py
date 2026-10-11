@@ -162,6 +162,10 @@ class Settings:
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
     observation_pack_limit: int = 10 * 1024
+    # Strip secrets (keys, tokens, passwords, .env values) from every tool result and hook note
+    # before the model, the panel or the transcript see it. Extra regexes are masked too.
+    redact: bool = True
+    redact_extra_patterns: list[str] = field(default_factory=list)
 
 
 def load_settings(path: Path | None = None) -> Settings:
