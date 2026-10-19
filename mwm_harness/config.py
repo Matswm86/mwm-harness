@@ -12,8 +12,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 REPO_MODELS = Path(__file__).resolve().parent.parent / "models.toml"
+
+SUBSCRIPTION_ENDPOINT_MARKER = "token-plan."
 
 
 class ConfigError(Exception):
@@ -103,6 +106,20 @@ def api_key_for(spec: ModelSpec, secrets: dict[str, str] | None = None) -> str:
     if key.endswith(".com") or "://" in key:
         raise MissingKey(f"{spec.key_env} holds a hostname or URL, not an API key")
     return key
+
+
+def is_subscription_endpoint(base_url: str) -> bool:
+    """True when ``base_url`` is a subscription plan endpoint, not a pay-as-you-go one.
+
+    The Token Plan is licensed for interactive use inside a coding or agent tool
+    only. Its terms ban automation scripts, custom application backends and
+    non-interactive batch calls, and name subscription suspension or key banning
+    as the penalty. A headless ``mwm -p`` turn is a script call, so it runs on a
+    pay-as-you-go or local model; the interactive REPL and the agents it spawns
+    stay on the plan, because the terms treat calls initiated interactively
+    within a tool as normal use.
+    """
+    return SUBSCRIPTION_ENDPOINT_MARKER in urlparse(base_url).netloc.lower()
 
 
 @dataclass

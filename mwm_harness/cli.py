@@ -19,6 +19,7 @@ from mwm_harness.config import (
     ConfigError,
     api_key_for,
     config_dir,
+    is_subscription_endpoint,
     load_models,
     load_secrets,
     load_settings,
@@ -78,6 +79,12 @@ async def run(args: argparse.Namespace) -> int:
     model_id = args.model or settings.default_model
     if model_id not in models:
         raise ConfigError(f"unknown model {model_id}; configured: {', '.join(models)}")
+    if args.prompt and is_subscription_endpoint(models[model_id].base_url):
+        raise ConfigError(
+            f"{model_id} sits on a subscription plan endpoint, and those terms allow "
+            "interactive use inside a tool only. A headless -p turn is a script call, so "
+            "pass --model with a local or pay-as-you-go id, or run mwm without -p."
+        )
     secrets = load_secrets()
     api_key_for(models[model_id], secrets)  # fail now, not after the first prompt
 

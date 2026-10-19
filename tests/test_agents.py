@@ -149,9 +149,13 @@ def test_headless_agent_run_prints_the_report(tmp_path, monkeypatch, capsys):
     provider = ScriptedProvider(turns)
     monkeypatch.setattr(cli, "OpenAICompatProvider", lambda secrets: provider)
     monkeypatch.setenv("MWM_HARNESS_API_KEY", "sk-test")
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # A local model, not the default: a headless -p turn on a subscription plan
+    # model is refused by design, see tests/test_subscription_guard.py.
+    local = "spark-x2.5-4b-32k"
     argv = ["-p", "check this draft", "--agent", "checker", "--allow", "WebFetch"]
-    argv += ["--cwd", str(project), "--no-hooks", "--no-mcp"]
+    argv += ["--model", local, "--cwd", str(project), "--no-hooks", "--no-mcp"]
     assert cli.main(argv) == 0
     assert capsys.readouterr().out.strip().endswith("VERIFIED: nothing to check.")
     offered = {spec["function"]["name"] for spec in provider.requests[0]["tools"]}
@@ -159,6 +163,19 @@ def test_headless_agent_run_prints_the_report(tmp_path, monkeypatch, capsys):
     fetched = provider.requests[1]["messages"][-1]
     assert "not an http(s) URL" in fetched["content"]  # --allow let WebFetch run with nobody to ask
     assert (
-        cli.main(["-p", "x", "--agent", "ghost", "--cwd", str(project), "--no-hooks", "--no-mcp"])
+        cli.main(
+            [
+                "-p",
+                "x",
+                "--agent",
+                "ghost",
+                "--model",
+                local,
+                "--cwd",
+                str(project),
+                "--no-hooks",
+                "--no-mcp",
+            ]
+        )
         == 3  # an unknown agent is a configuration mistake; 2 is kept for a missing key
     )

@@ -206,7 +206,13 @@ def test_exit_codes_tell_a_missing_key_from_a_mistyped_model(monkeypatch, tmp_pa
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("MWM_HARNESS_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setattr("mwm_harness.config.config_dir", lambda: tmp_path / "cfg")
     assert cli.main(["-p", "hi", "--model", "no-such-model", "--cwd", str(tmp_path)]) == 3
-    assert cli.main(["-p", "hi", "--model", "qwen3.8-max", "--cwd", str(tmp_path)]) == 2
-    assert "no API key" in capsys.readouterr().err
+    assert cli.main(["-p", "hi", "--model", "ornith-1.5-35b-32k", "--cwd", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert "no API key" in err
+    # A subscription plan model is refused headless before any key is looked up,
+    # and that is a configuration mistake, not a missing key.
+    assert cli.main(["-p", "hi", "--model", "qwen3.8-max", "--cwd", str(tmp_path)]) == 3
+    assert "subscription plan endpoint" in capsys.readouterr().err
