@@ -22,6 +22,30 @@ soft_budget = 200000
 family = "glm"
 soft_budget = 200000
 
+# Cheap interactive tier. Verified on the plan key's /models list 2026-10-19, and
+# Qwen Code's provider registry gives it a 1,000,000-token window with image and
+# video input and the same thinking efforts as qwen3.8-max. This is what the
+# light agents run on so the lead model's credits are not spent on searching.
+[models."qwen3.8-flash"]
+family = "qwen"
+context_window = 1000000
+soft_budget = 200000
+thinking_field = "enable_thinking"
+
+# Different family from Qwen, which is what the critic needs: a model that reviews
+# Qwen's work must not share Qwen's blind spots. glm-5.3 is on the plan key's
+# /models list, but neither it nor deepseek-v4.1-flash appears in Qwen Code's
+# provider registry, so their context windows are UNVERIFIED. Both therefore keep
+# the 128k default window and a conservative budget rather than an invented one.
+# glm-5.2 above is the sibling with a verified 1,000,000-token window.
+[models."glm-5.3"]
+family = "glm"
+soft_budget = 100000
+
+[models."deepseek-v4.1-flash"]
+family = "deepseek"
+soft_budget = 100000
+
 # Local models behind Ollama's OpenAI-compatible endpoint. Ollama ignores the
 # key, but key_env must hold any non-empty value (OLLAMA_API_KEY=ollama).
 # The endpoint cannot take num_ctx per request and Ollama cuts a longer prompt
@@ -86,3 +110,19 @@ base_url = "http://localhost:11434/v1"
 key_env = "OLLAMA_API_KEY"
 context_window = 32768
 soft_budget = 26000
+
+# Groq hosted inference, OpenAI-compatible. This is the lane for headless `mwm -p`
+# callers (Stop gates, the weekly agent audit, the destructive sweep): the Token
+# Plan terms reserve that subscription for interactive use inside a tool, so a
+# script lane needs a pay-per-token or free hosted backend instead.
+# Specs from console.groq.com/docs/model/qwen/qwen3.8-27b, read 2026-10-19:
+# 131,072 context, 16,384 max completion, 450 tok/s, image input supported.
+# WARNING: Groq lists this id as a PREVIEW model that may be discontinued. It is
+# one entry here plus MWM_CLAUDE_REPLACEMENT, so swapping it out is a config edit.
+# The id contains a slash because that is the literal model name Groq expects.
+[models."qwen/qwen3.8-27b"]
+family = "qwen"
+base_url = "https://api.groq.com/openai/v1"
+key_env = "GROQ_API_KEY"
+context_window = 131072
+soft_budget = 100000
