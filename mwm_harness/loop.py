@@ -63,13 +63,28 @@ TOOL_CRASHES = (OSError, ValueError, RuntimeError, KeyError, TypeError, UnicodeE
 
 
 def default_hook_settings(cwd: Path) -> list[Path]:
-    """The settings files whose hooks apply: the user's, the workspace's, the project's."""
-    candidates = [
-        Path.home() / ".claude" / "settings.json",
-        workspace_root() / ".claude" / "settings.json",
-        cwd / ".claude" / "settings.json",
-        config_dir() / "hooks.json",
-    ]
+    """The settings files whose hooks apply.
+
+    ``<workspace>/harness/hooks.json`` is the merged canonical file (built
+    2026-10-20 from the user- and workspace-level ``.claude/settings.json``) and
+    replaces both when present, so no registration loads twice.
+    ``config_dir()/hooks.json`` is a machine-level fallback used only when the
+    workspace file is missing. With neither merged file present, the legacy
+    ``.claude`` pair is read. A project's own ``.claude/settings.json`` still
+    applies whenever the cwd is a subproject rather than the workspace root.
+    """
+    canonical = workspace_root() / "harness" / "hooks.json"
+    fallback = config_dir() / "hooks.json"
+    workspace_settings = workspace_root() / ".claude" / "settings.json"
+    project = cwd / ".claude" / "settings.json"
+    if canonical.is_file():
+        candidates = [canonical]
+    elif fallback.is_file():
+        candidates = [fallback]
+    else:
+        candidates = [Path.home() / ".claude" / "settings.json", workspace_settings]
+    if project.resolve() != workspace_settings.resolve():
+        candidates.append(project)
     unique: list[Path] = []
     for path in candidates:
         if path.resolve() not in [p.resolve() for p in unique]:

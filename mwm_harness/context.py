@@ -33,7 +33,10 @@ You work by calling tools. Rules for tool use:
 Report outcomes as they are: failing tests are reported as failing, skipped steps as skipped.
 """
 
-RULE_FILES = (".claude/CLAUDE.md", "CLAUDE.md", "RULES.md", "AGENTS.md")
+# QWEN.md first: it is the maintained workspace rules file since the 2026-10-20 .claude archive, and
+# the first match per folder wins. The CLAUDE.md entries stay because 10 subprojects still keep their
+# own rules there (9 at the project root, 1 under .claude/).
+RULE_FILES = ("QWEN.md", "CLAUDE.md", ".claude/CLAUDE.md", "RULES.md", "AGENTS.md")
 IMPORT_LINE = re.compile(r"^@(\S+\.md)\s*$", re.MULTILINE)
 MAX_RULES_CHARS = 60_000
 
@@ -67,9 +70,13 @@ def find_rule_files(cwd: Path, workspace: Path) -> list[Path]:
             if candidate.is_file() and candidate not in found:
                 found.append(candidate)
                 break
+    # The canonical copy wins; the original ~/.claude one is read only until the
+    # .claude archive removes it, never both, or its text loads twice.
+    harness_rules = workspace / "harness" / "user-rules.md"
     user_rules = Path.home() / ".claude" / "CLAUDE.md"
-    if user_rules.is_file() and user_rules not in found:
-        found.append(user_rules)
+    rules = harness_rules if harness_rules.is_file() else user_rules
+    if rules.is_file() and rules not in found:
+        found.append(rules)
     return found
 
 

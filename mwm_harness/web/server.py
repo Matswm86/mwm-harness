@@ -158,6 +158,7 @@ class Tab:
         # The running turn as the page saw it, so a page that switches here mid-turn can replay it.
         self.live: list[dict[str, Any]] = []
         self.turn_base = 0  # messages that existed before the running turn began
+        self.turn_requests = 0  # model requests the running turn made, for the page's live counter
         self.worktree = ""  # set when the tab works in its own git worktree
         self.written: set[Path] = set()  # files this tab's Write/Edit calls changed
         self._writing: dict[str, str] = {}
@@ -172,6 +173,10 @@ class Tab:
     def on_event(self, event: ev.Event) -> None:
         if isinstance(event, QUIET_EVENTS):
             return
+        if isinstance(event, ev.TurnStarted | ev.TurnEnded):
+            self.turn_requests = 0
+        elif isinstance(event, ev.UsageUpdated):
+            self.turn_requests += 1  # the loop emits one UsageUpdated per recorded request
         payload = {"type": type(event).__name__, **dataclasses.asdict(event)}
         if isinstance(event, ev.UsageUpdated):
             payload.update(self.usage())
@@ -233,6 +238,8 @@ class Tab:
             "total_prompt": meter.total_prompt,
             "total_completion": meter.total_completion,
             "requests": meter.requests,
+            "turn_requests": self.turn_requests,
+            "request_cap": self.session.settings.max_requests_per_turn,
         }
 
     def state(self) -> dict[str, Any]:

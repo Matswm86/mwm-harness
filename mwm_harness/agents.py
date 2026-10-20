@@ -45,6 +45,9 @@ class Agent:
 def agent_roots(cwd: Path) -> list[Path]:
     return [
         cwd / ".claude" / "agents",
+        workspace_root()
+        / "harness"
+        / "agents",  # canonical since the 2026-10-20 .claude relocation
         workspace_root() / ".claude" / "agents",
         Path.home() / ".claude" / "agents",
         BUILTIN_AGENTS,  # last, so an agent file of the same name shadows a built-in

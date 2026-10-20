@@ -163,6 +163,9 @@ class Command:
 def command_roots(cwd: Path) -> list[Path]:
     return [
         cwd / ".claude" / "commands",
+        workspace_root()
+        / "harness"
+        / "commands",  # canonical since the 2026-10-20 .claude relocation
         workspace_root() / ".claude" / "commands",
         Path.home() / ".claude" / "commands",
     ]
