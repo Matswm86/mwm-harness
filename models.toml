@@ -126,3 +126,27 @@ base_url = "https://api.groq.com/openai/v1"
 key_env = "GROQ_API_KEY"
 context_window = 131072
 soft_budget = 100000
+
+# Pay-as-you-go Model Studio, Singapore. Script-permitted, unlike the Token Plan
+# entries above, so this is what headless `mwm -p` callers use. The id carries a
+# payg- prefix because the model NAME is the same as the Token Plan entry while
+# the endpoint and key are different, and the headless guard keys off the host.
+# Prices per 1M tokens: flash $0.15 in / $0.47 out, max $2.00 in / $6.00 out.
+# Spend is metered and capped by BAILIAN_MONTHLY_BUDGET_USD in core/llm_backends.py.
+[models."payg-qwen3.8-flash"]
+api_model = "qwen3.8-flash"
+family = "qwen"
+base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+key_env = "BAILIAN_API_KEY"
+context_window = 1000000
+soft_budget = 200000
+thinking_field = "enable_thinking"
+
+[models."payg-qwen3.8-max"]
+api_model = "qwen3.8-max"
+family = "qwen"
+base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+key_env = "BAILIAN_API_KEY"
+context_window = 1000000
+soft_budget = 200000
+thinking_field = "enable_thinking"

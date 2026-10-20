@@ -39,7 +39,7 @@ def build_request(
     spec: ModelSpec, system: str, messages: list[Message], tools: list[dict[str, Any]]
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "model": spec.id,
+        "model": spec.api_model or spec.id,
         "messages": to_openai(system, messages, spec.echo_reasoning),
         "stream": True,
         "stream_options": {"include_usage": True},

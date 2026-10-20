@@ -45,6 +45,12 @@ class ModelSpec:
     id: str
     base_url: str
     key_env: str
+    # The model name sent on the wire. Empty means "use id". Needed when two
+    # registry entries share one upstream model but differ in endpoint and key,
+    # e.g. qwen3.8-flash on the Token Plan (interactive only) and the same model
+    # on pay-as-you-go (script-permitted). TOML keys must be unique, so the
+    # registry id carries a prefix the API would reject.
+    api_model: str = ""
     family: str = ""
     context_window: int = 128_000
     soft_budget: int = 100_000
