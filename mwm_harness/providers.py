@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from mwm_harness import spend
 from mwm_harness.config import ModelSpec, api_key_for
 from mwm_harness.messages import Message, to_openai, tools_to_openai
 from mwm_harness.streaming import parse_sse_line
@@ -72,6 +73,16 @@ class OpenAICompatProvider:
         url = spec.base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         body = build_request(spec, system, messages, tools)
+        wire_model = spec.api_model or spec.id
+        metered = spend.is_metered(spec.base_url)
+        if metered and not spend.budget_ok(wire_model):
+            # 402 Payment Required: the month's cap is spent, so no request goes
+            # out. A headless agent loop must stop here rather than bill on.
+            raise ProviderError(
+                f"{spec.id}: monthly pay-as-you-go budget exhausted; refusing the call",
+                402,
+            )
+        recorded = False
         try:
             async with (
                 httpx.AsyncClient(timeout=self._timeout) as client,
@@ -89,6 +100,12 @@ class OpenAICompatProvider:
                     except json.JSONDecodeError as exc:
                         raise ProviderError(f"{spec.id}: unreadable stream line: {exc}") from exc
                     if chunk is not None:
+                        # build_request asks for include_usage, so the final chunk
+                        # carries the token counts; price it once into the shared
+                        # ledger that core/llm_backends.py also writes.
+                        if metered and not recorded and chunk.get("usage"):
+                            spend.record(wire_model, chunk["usage"])
+                            recorded = True
                         yield chunk
         except httpx.HTTPError as exc:
             raise ProviderError(f"{spec.id}: {type(exc).__name__}: {exc}") from exc
