@@ -18,7 +18,7 @@ from typing import Any
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
-from mwm_harness.config import ModelSpec, Settings, config_dir, workspace_root
+from mwm_harness.config import EFFORTS, ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.hooks import HookEngine, load_registrations
 from mwm_harness.mcp_client import HARNESS_SECRET_ENV, McpManager
@@ -146,6 +146,7 @@ class Session:
         self.model = model
         self.provider = provider
         self.settings = settings or Settings()
+        self.effort = self.settings.reasoning_effort
         self.approver = approver or ev.DenyAll()
         self.bus = bus or ev.EventBus()
         self.redactor = (
@@ -298,6 +299,12 @@ class Session:
         self.hooks.permission_mode = mode
         self.bus.emit(ev.ModeChanged(mode))
 
+    def set_effort(self, effort: str) -> None:
+        if effort not in EFFORTS:
+            raise ValueError(f"unknown effort {effort!r}; choose one of {', '.join(EFFORTS)}")
+        self.effort = effort
+        self.bus.emit(ev.EffortChanged(effort))
+
     async def _handle_plan(self, plan: str) -> bool:
         """Show the plan, ask the person, and leave plan mode on a yes."""
         self.plan = plan
@@ -340,7 +347,9 @@ class Session:
         assembler = StreamAssembler()
         try:
             request = [*self.messages, Message("user", ask)]
-            async for chunk in self.provider.stream(self.model, self.system_prompt, request, []):
+            async for chunk in self.provider.stream(
+                self.model, self.system_prompt, request, [], self.effort
+            ):
                 assembler.feed(chunk)
         except ProviderError as exc:
             self.bus.emit(ev.Notice("error", f"compaction failed, history kept: {exc}"))
@@ -379,7 +388,7 @@ class Session:
     def sibling(self, cwd: Path, model: ModelSpec, resume_from: Path | None = None) -> Session:
         """A new session that runs like this one: same provider, settings, hooks and MCP pool."""
         same_folder = cwd.resolve() == self.cwd
-        return Session(
+        sibling = Session(
             cwd=cwd,
             model=model,
             provider=self.provider,
@@ -393,6 +402,8 @@ class Session:
             agents=self.agents if same_folder else None,
             models=self.models,
         )
+        sibling.effort = self.effort
+        return sibling
 
     async def run_tool_call(
         self, name: str, tool_input: dict[str, Any], force_ask: bool = False
@@ -628,7 +639,7 @@ class Session:
                 self.bus.emit(
                     ev.Notice("warn", f"observation archive failed, sent in full: {error}")
                 )
-        stream = self.provider.stream(self.model, self.system_prompt, messages, specs)
+        stream = self.provider.stream(self.model, self.system_prompt, messages, specs, self.effort)
         async for chunk in stream:
             assembler.feed(chunk)
             for choice in chunk.get("choices") or []:

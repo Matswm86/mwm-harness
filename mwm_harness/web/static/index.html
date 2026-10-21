@@ -365,6 +365,10 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
       <option value="default">ask</option><option value="acceptEdits">accept edits</option>
       <option value="bypassPermissions">bypass</option><option value="plan">plan</option>
     </select></label>
+    <label class="chip" title="How hard the model thinks before answering. Thinking tokens are output tokens, so this is the main per-turn cost dial. Sent as reasoning_effort on the qwen3.8 family.">effort <select id="effort" aria-label="Reasoning effort">
+      <option value="default">default</option><option value="low">low</option><option value="medium">medium</option>
+      <option value="high">high</option><option value="xhigh">xhigh</option>
+    </select></label>
     <span class="meter" title="Last prompt plus last answer, as reported by the endpoint">ctx <span class="bar"><i id="ctxbar"></i></span><b id="ctxnum">0</b>/<span id="ctxwin">0</span></span>
     <span class="chip" title="Tokens this session">in <b id="tin">0</b> · out <b id="tout">0</b> · cached <b id="tcached">0</b></span>
     <span class="chip" title="Model requests this session">requests <b id="reqs">0</b></span>
@@ -1290,6 +1294,7 @@ function loadState(s) {
   const model = $("model"); model.replaceChildren();
   s.models.forEach((m) => model.append(new Option(m, m, false, m === s.model)));
   $("mode").value = s.mode;
+  $("effort").value = ["low", "medium", "high", "xhigh"].includes(s.effort) ? s.effort : "default";
   const sb = $("sandbox"); sb.className = "chip " + (s.sandbox ? "ok" : "bad"); sb.replaceChildren("shell sandbox ", el("b", null, s.sandbox ? "on" : "OFF"));
   $("sessinfo").textContent = `${s.cwd}\nsession ${s.session_id}\nshell sandbox ${s.sandbox ? "on" : "OFF"}`;
   $("sid").textContent = s.session_id.slice(0, 8); $("cwdname").textContent = baseName(s.cwd);
@@ -1352,6 +1357,7 @@ const handlers = {
   MemoryHits: drawMemoryHits,
   PlanResolved: (e) => note("info", e.approved ? "plan approved" : "plan rejected"),
   ModeChanged: (e) => { $("mode").value = e.mode; if (state) state.mode = e.mode; if (scene) scene.setCore(); },
+  EffortChanged: (e) => { $("effort").value = ["low", "medium", "high", "xhigh"].includes(e.effort) ? e.effort : "default"; if (state) state.effort = e.effort; },
   ModelChanged: (e) => { $("model").value = e.model; if (state) state.model = e.model; if (scene) scene.setCore(); },
   TurnEnded: (e) => { if (streaming.size) endStreams(); setBusy(false); current = null; reasoning = null; if (e.reason !== "done") note("warn", `turn ended: ${e.reason}`); recordOutput(e); drawAgents(); if (e.reason === "done") speakAnswer(e.text); },
   ApprovalRequest: (e) => { approvals.push(e); showApproval(); },
@@ -1447,6 +1453,7 @@ function connect() {
 /* ---------------- composer: slash menu, Enter sends ---------------- */
 const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["agents", "loaded agents"], ["context", "what fills the context"],
   ["compact", "summarise history"], ["usage", "tokens this session"], ["files", "file tree"], ["open", "open a file in the viewer"],
+  ["effort", "how hard the model thinks: low, medium, high, xhigh"],
   ["mcp", "servers and tools"], ["jev", "ask Jev for a logged vote"], ["mode", "ask / accept edits / plan"], ["model", "switch model"],
   ["models", "list models"], ["think", "show thinking on/off"], ["permissions", "file, shell, web rules"], ["hooks", "loaded hooks"],
   ["skills", "loaded skills"], ["memory", "memory files"], ["resume", "resume a session"], ["init", "write a project note"],
@@ -1480,6 +1487,7 @@ input.addEventListener("input", () => { sel = 0; drawMenu(); input.style.height 
 $("stop").addEventListener("click", () => send({ type: "cancel" }));
 $("model").addEventListener("change", (event) => send({ type: "prompt", text: "/model " + event.target.value }));
 $("mode").addEventListener("change", (event) => send({ type: "prompt", text: "/mode " + event.target.value }));
+$("effort").addEventListener("change", (event) => send({ type: "prompt", text: "/effort " + event.target.value }));
 document.addEventListener("keydown", (event) => {
   if (event.altKey && event.shiftKey && (event.key === "X" || event.key === "x")) { event.preventDefault(); stopAll(); return; }
   // Approval keys only when no text field has the focus (an empty message box does not count).

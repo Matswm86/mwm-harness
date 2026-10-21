@@ -371,7 +371,7 @@ def test_cancel_during_bash_kills_the_process_tree(make_session):
 
 def test_cancel_mid_stream_keeps_partial_text(make_session):
     class SlowProvider:
-        async def stream(self, spec, system, messages, tools):
+        async def stream(self, spec, system, messages, tools, effort=""):
             yield {"choices": [{"delta": {"content": "Partial ans"}}]}
             await asyncio.sleep(30)
             yield {"choices": [{"delta": {"content": "never arrives"}}]}

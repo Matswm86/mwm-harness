@@ -182,6 +182,11 @@ class ModeChanged(Event):
 
 
 @dataclass
+class EffortChanged(Event):
+    effort: str
+
+
+@dataclass
 class ModelChanged(Event):
     model: str
 

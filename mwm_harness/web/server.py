@@ -251,6 +251,7 @@ class Tab:
             "model": session.model.id,
             "models": list(self.panel.models),
             "mode": session.permissions.mode,
+            "effort": session.effort,
             "cwd": str(session.cwd),
             "session_id": session.transcript.session_id,
             "sandbox": session.tool_ctx.sandbox.enabled,

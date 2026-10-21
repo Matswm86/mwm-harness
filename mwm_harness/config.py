@@ -18,6 +18,10 @@ REPO_MODELS = Path(__file__).resolve().parent.parent / "models.toml"
 
 SUBSCRIPTION_ENDPOINT_MARKER = "token-plan."
 
+# Reasoning effort tiers, lowest first. The qwen3.8 family's ladder stops at xhigh,
+# so a configured max is clamped there rather than sent and refused.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 
 class ConfigError(Exception):
     """Something the person running the harness has to fix. ``mwm`` exits with ``code``."""
@@ -133,6 +137,11 @@ class Settings:
     """Harness behaviour. Read from ``settings.toml`` in the config directory."""
 
     default_model: str = "qwen3.8-max"
+    # How hard reasoning models think before answering, sent as reasoning_effort on
+    # the qwen3.8 family and ignored elsewhere. "" leaves the endpoint's own default.
+    # /effort changes it for one session; thinking tokens are output tokens, so this
+    # is the main per-turn cost dial.
+    reasoning_effort: str = "medium"
     permission_mode: str = "default"
     sandbox: str = "auto"  # auto | bwrap | off
     # Bash calls with network: true. ask = always ask the person, in every mode (default);
@@ -203,5 +212,10 @@ def load_settings(path: Path | None = None) -> Settings:
     if settings.shell_network not in ("ask", "allow", "deny"):
         raise ConfigError(
             f"settings.toml: shell_network must be ask, allow or deny, got {settings.shell_network!r}"
+        )
+    if settings.reasoning_effort not in ("", *EFFORTS):
+        raise ConfigError(
+            f"settings.toml: reasoning_effort must be one of {', '.join(EFFORTS)} or empty, "
+            f"got {settings.reasoning_effort!r}"
         )
     return settings

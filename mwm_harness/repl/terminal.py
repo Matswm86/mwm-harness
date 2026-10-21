@@ -17,7 +17,7 @@ from typing import Any
 
 from mwm_harness import events as ev
 from mwm_harness import hardware, postmortem
-from mwm_harness.config import ModelSpec
+from mwm_harness.config import EFFORTS, ModelSpec
 from mwm_harness.jev import format_report, report
 from mwm_harness.loop import Session
 from mwm_harness.permissions import MODES
@@ -32,6 +32,7 @@ HELP = """\
 /models               list configured models
 /context  /usage      context meter and session token totals
 /mode [name]          show or set the permission mode (default, acceptEdits, bypassPermissions, plan)
+/effort [level]       show or set reasoning effort (low, medium, high, xhigh, max); qwen3.8 family only
 /think [on|off]       show or hide the model's thinking (dimmed)
 /plan [off]           plan mode: reading tools only until you approve a plan; shows the last plan
 /permissions          mode, sandbox state and the hard deny list
@@ -359,6 +360,20 @@ def run_command(
         elif argument:
             out.line(f"unknown mode; choose one of {', '.join(MODES)}")
         out.line(f"permission mode: {session.permissions.mode}")
+    elif name == "/effort":
+        if argument in EFFORTS:
+            session.set_effort(argument)
+        elif argument in ("default", "off"):
+            session.set_effort(session.settings.reasoning_effort)
+        elif argument:
+            out.line(f"unknown effort; choose one of {', '.join(EFFORTS)} or default")
+        wire = session.model.api_model or session.model.id
+        note = (
+            ""
+            if wire.startswith("qwen3.8")
+            else f" (not sent to {session.model.id}: only the qwen3.8 family takes it)"
+        )
+        out.line(f"reasoning effort: {session.effort or 'model default'}{note}")
     elif name == "/think":
         if argument in ("on", "off"):
             out.show_thinking = argument == "on"

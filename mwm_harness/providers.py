@@ -33,11 +33,16 @@ class Provider(Protocol):
         system: str,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        effort: str = "",
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
 def build_request(
-    spec: ModelSpec, system: str, messages: list[Message], tools: list[dict[str, Any]]
+    spec: ModelSpec,
+    system: str,
+    messages: list[Message],
+    tools: list[dict[str, Any]],
+    effort: str = "",
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": spec.api_model or spec.id,
@@ -49,7 +54,12 @@ def build_request(
         body["tools"] = tools_to_openai(tools)
         if spec.parallel_tool_calls:
             body["parallel_tool_calls"] = True
-    if spec.thinking_field:
+    wire = spec.api_model or spec.id
+    if effort and wire.startswith("qwen3.8"):
+        # On this family reasoning_effort both switches thinking on and says how
+        # hard, so the enable_thinking toggle is not sent alongside it.
+        body["reasoning_effort"] = "xhigh" if effort == "max" else effort
+    elif spec.thinking_field:
         body[spec.thinking_field] = True
     body.update(spec.extra_body)
     return body
@@ -68,11 +78,12 @@ class OpenAICompatProvider:
         system: str,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        effort: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         key = api_key_for(spec, self._secrets)
         url = spec.base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        body = build_request(spec, system, messages, tools)
+        body = build_request(spec, system, messages, tools, effort)
         wire_model = spec.api_model or spec.id
         metered = spend.is_metered(spec.base_url)
         if metered and not spend.budget_ok(wire_model):
@@ -155,8 +166,9 @@ class ScriptedProvider:
         system: str,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        effort: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
-        self.requests.append(build_request(spec, system, messages, tools))
+        self.requests.append(build_request(spec, system, messages, tools, effort))
         if not self._turns:
             raise ProviderError("scripted provider ran out of turns")
         turn = self._turns.pop(0)
