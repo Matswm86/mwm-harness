@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from mwm_harness.messages import IMAGE_SUFFIXES, image_block, image_problem, media_type_for
 from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "__pycache__", ".ruff_cache", ".pytest_cache"}
@@ -24,7 +25,9 @@ MAX_LINE_CHARS = 2000
 class Read(Tool):
     name = "Read"
     description = (
-        "Read a text file. Returns numbered lines. Use offset and limit for a part of a large file."
+        "Read a file. Text comes back as numbered lines; use offset and limit for a part of a "
+        "large file. An image (png jpg gif webp bmp) comes back as the picture itself, so a "
+        "vision model can read it; the file must be under 8 MB."
     )
     input_schema = {
         "type": "object",
@@ -41,6 +44,8 @@ class Read(Tool):
         path = ctx.resolve(tool_input["file_path"])
         if path.is_dir():
             return ToolResult(f"{path} is a directory; use Glob or Bash ls", True)
+        if path.suffix.lower() in IMAGE_SUFFIXES:
+            return self._image(path)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
@@ -61,6 +66,16 @@ class Read(Tool):
         if left > 0:
             body += f"\n[{left} more lines; continue with offset={start + len(chosen)}]"
         return ToolResult(ctx.cap(body))
+
+    def _image(self, path: Path) -> ToolResult:
+        problem = image_problem(path)
+        if problem:
+            return ToolResult(problem, True)
+        media = media_type_for(path)
+        return ToolResult(
+            f"[image {path}, {media}, {path.stat().st_size:,} bytes]",
+            images=[image_block(path, media)],
+        )
 
 
 class Write(Tool):

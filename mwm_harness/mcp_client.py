@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from mwm_harness.config import config_dir, workspace_root
+from mwm_harness.messages import Block, image_block, image_problem
 from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -540,18 +541,29 @@ class McpTool(Tool):
             result = await self.manager.servers[self.server].call_tool(self.remote_name, tool_input)
         except McpError as exc:
             return ToolResult(str(exc), True)
-        return ToolResult(ctx.cap(render_result(result, ctx.scratch)), bool(result.get("isError")))
+        text, images = render_result(result, ctx.scratch)
+        return ToolResult(ctx.cap(text), bool(result.get("isError")), images)
 
 
-def render_result(result: dict[str, Any], scratch: Path) -> str:
-    """Flatten MCP content blocks to text. Binary blocks are saved and named, not inlined."""
+def render_result(result: dict[str, Any], scratch: Path) -> tuple[str, list[Block]]:
+    """Flatten MCP content blocks to text, plus the images to send the model.
+
+    A binary block is saved to scratch and named in the text either way, so the
+    path survives in the transcript and in a text-only model's view of it. An
+    image additionally comes back as a block, which is what makes a vision model
+    see the frame instead of only its filename.
+    """
     parts: list[str] = []
+    images: list[Block] = []
     for block in result.get("content") or []:
         kind = block.get("type")
         if kind == "text":
             parts.append(str(block.get("text") or ""))
         elif kind in ("image", "audio"):
-            parts.append(_save_binary(block, scratch))
+            note, image = _save_binary(block, scratch)
+            parts.append(note)
+            if image is not None:
+                images.append(image)
         elif kind == "resource":
             resource = block.get("resource") or {}
             parts.append(str(resource.get("text") or f"[resource {resource.get('uri', '')}]"))
@@ -559,17 +571,23 @@ def render_result(result: dict[str, Any], scratch: Path) -> str:
             parts.append(f"[resource link {block.get('uri', '')}]")
     if not parts and result.get("structuredContent") is not None:
         parts.append(json.dumps(result["structuredContent"], ensure_ascii=False, indent=2))
-    return "\n".join(parts) if parts else "(empty result)"
+    return ("\n".join(parts) if parts else "(empty result)"), images
 
 
-def _save_binary(block: dict[str, Any], scratch: Path) -> str:
+def _save_binary(block: dict[str, Any], scratch: Path) -> tuple[str, Block | None]:
     mime = str(block.get("mimeType") or "application/octet-stream")
     try:
         raw = base64.b64decode(block.get("data") or "")
     except ValueError:
-        return f"[{block.get('type')} {mime}: undecodable data]"
+        return f"[{block.get('type')} {mime}: undecodable data]", None
     scratch.mkdir(parents=True, exist_ok=True)
     suffix = mime.rsplit("/", 1)[-1].split("+")[0][:8] or "bin"
     path = scratch / f"mcp-{uuid.uuid4().hex[:8]}.{suffix}"
     path.write_bytes(raw)
-    return f"[{block.get('type')} {mime}, {len(raw):,} bytes, saved to {path}]"
+    note = f"[{block.get('type')} {mime}, {len(raw):,} bytes, saved to {path}]"
+    image = (
+        image_block(path, mime)
+        if block.get("type") == "image" and not image_problem(path)
+        else None
+    )
+    return note, image

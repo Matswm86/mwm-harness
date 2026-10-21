@@ -4,17 +4,29 @@ Everything inside the harness (history, transcript, hooks) speaks this shape:
 
     {"role": "user" | "assistant", "content": str | [block, ...]}
 
-with blocks ``text``, ``thinking``, ``tool_use`` and ``tool_result``. The
-existing Stop gates parse exactly this shape, so it is the storage format.
+with blocks ``text``, ``thinking``, ``tool_use``, ``tool_result`` and ``image``.
+The existing Stop gates parse exactly this shape, so it is the storage format.
 Conversion to the OpenAI wire format happens here and only for the request
 that leaves the process.
+
+An image block names a FILE, it never holds the bytes:
+
+    {"type": "image", "source": {"type": "file", "path": ..., "media_type": ...}}
+
+The bytes are read and base64-encoded when a request is built, so the transcript
+stays small enough for the gates and ``/resume`` to parse, and an image costs
+tokens only while it is recent enough to be sent (see observation_pack).
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mwm_harness.events import now_stamp
@@ -60,11 +72,80 @@ def tool_use_block(name: str, tool_input: dict[str, Any], call_id: str = "") -> 
     }
 
 
-def tool_result_block(tool_use_id: str, content: str, is_error: bool = False) -> Block:
-    block: Block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+def tool_result_block(
+    tool_use_id: str,
+    content: str,
+    is_error: bool = False,
+    images: Sequence[Block] = (),
+) -> Block:
+    """A result the model can see. With images the content becomes a block list,
+    which is the shape Anthropic uses and the shape ``_result_text`` already reads."""
+    block: Block = {"type": "tool_result", "tool_use_id": tool_use_id}
+    if images:
+        parts: list[Block] = [text_block(content)] if content else []
+        parts.extend(images)
+        block["content"] = parts
+    else:
+        block["content"] = content
     if is_error:
         block["is_error"] = True
     return block
+
+
+MAX_IMAGE_BYTES = 8 * 1024 * 1024  # the DashScope per-image limit is 10 MB
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def media_type_for(path: Path | str) -> str:
+    guessed = mimetypes.guess_type(str(path))[0] or ""
+    return guessed if guessed.startswith("image/") else "image/jpeg"
+
+
+def image_problem(path: Path) -> str | None:
+    """Why this file cannot be sent as an image, or None when it can."""
+    if not path.is_file():
+        return f"file not found: {path}"
+    if path.suffix.lower() not in IMAGE_SUFFIXES:
+        return f"not an image ({path.suffix or 'no extension'}); supported: png jpg gif webp bmp"
+    size = path.stat().st_size
+    if size > MAX_IMAGE_BYTES:
+        return (
+            f"the image is {size:,} bytes, over the {MAX_IMAGE_BYTES:,} byte limit; shrink it first"
+        )
+    return None
+
+
+def image_block(path: Path | str, media_type: str = "") -> Block:
+    return {
+        "type": "image",
+        "source": {
+            "type": "file",
+            "path": str(path),
+            "media_type": media_type or media_type_for(path),
+        },
+    }
+
+
+def images_in(block: Block) -> list[Block]:
+    """The images a tool_result block carries."""
+    content = block.get("content")
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == "image"]
+
+
+def encode_image(block: Block) -> tuple[str | None, str]:
+    """The ``data:`` URL for an image block, and the note to send instead when it fails."""
+    source = block.get("source") or {}
+    path = Path(str(source.get("path") or ""))
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"[image {path} could not be read: {exc}]"
+    if len(raw) > MAX_IMAGE_BYTES:
+        return None, f"[image {path} is {len(raw):,} bytes, over the send limit]"
+    media = str(source.get("media_type") or media_type_for(path))
+    return f"data:{media};base64,{base64.b64encode(raw).decode()}", ""
 
 
 def assistant_from_turn(turn: AssembledTurn) -> tuple[Message, dict[str, str]]:
@@ -90,7 +171,7 @@ def assistant_from_turn(turn: AssembledTurn) -> tuple[Message, dict[str, str]]:
 
 
 def to_openai(
-    system: str, messages: list[Message], echo_reasoning: bool = False
+    system: str, messages: list[Message], echo_reasoning: bool = False, vision: bool = False
 ) -> list[dict[str, Any]]:
     """Convert block history into OpenAI chat messages.
 
@@ -98,6 +179,12 @@ def to_openai(
     assistant message that made the calls, so they are emitted before any text
     that shares their user message. Adjacent plain user messages are merged
     because some endpoints reject two user turns in a row.
+
+    Images cannot ride in a ``role: tool`` message: the endpoints take image
+    parts in a user turn only. So every tool result of one message goes out
+    first and its images follow in one multipart user message. A model without
+    ``vision`` gets a text note naming the file instead of the bytes, because an
+    image sent to a text-only model fails the whole request.
     """
     out: list[dict[str, Any]] = []
     if system:
@@ -107,8 +194,11 @@ def to_openai(
             out.append(_assistant_to_openai(message, echo_reasoning))
             continue
         texts: list[str] = []
+        pending: list[Block] = []
+        from_tools: list[str] = []
         for block in message.blocks():
-            if block.get("type") == "tool_result":
+            kind = block.get("type")
+            if kind == "tool_result":
                 out.append(
                     {
                         "role": "tool",
@@ -116,15 +206,59 @@ def to_openai(
                         "content": _result_text(block.get("content")),
                     }
                 )
-            elif block.get("type") == "text" and block.get("text"):
+                carried = images_in(block)
+                pending += carried
+                from_tools += [str((i.get("source") or {}).get("path", "")) for i in carried]
+            elif kind == "image":
+                pending.append(block)
+            elif kind == "text" and block.get("text"):
                 texts.append(block["text"])
-        if texts:
-            joined = "\n\n".join(texts)
-            if out and out[-1]["role"] == "user":
-                out[-1]["content"] += "\n\n" + joined
-            else:
-                out.append({"role": "user", "content": joined})
+        if pending and not vision:
+            texts += [_no_vision_note(block) for block in pending]
+            pending = []
+        parts: list[dict[str, Any]] = []
+        for block in pending:
+            url, note = encode_image(block)
+            if url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+            elif note:
+                texts.append(note)
+        if parts and from_tools:
+            # A tool message cannot carry an image, so the picture lands in a turn
+            # of its own: say which result it came from, or several calls in one
+            # turn leave the model guessing which image answered which.
+            texts.insert(0, f"[image(s) above from the tool result(s): {', '.join(from_tools)}]")
+        _append_user(out, texts, parts)
     return out
+
+
+def _no_vision_note(block: Block) -> str:
+    path = (block.get("source") or {}).get("path", "")
+    return f"[image not sent, this model takes text only: {path}. Use a vision model to read it.]"
+
+
+def _append_user(out: list[dict[str, Any]], texts: list[str], parts: list[dict[str, Any]]) -> None:
+    """Add one user turn, merging into the previous one: two user turns in a row
+    are rejected by some endpoints, and a multipart turn has to stay multipart."""
+    joined = "\n\n".join(texts)
+    if not parts and not joined:
+        return
+    if out and out[-1]["role"] == "user":
+        entry = out[-1]
+        content = entry["content"]
+        if isinstance(content, str):
+            if not parts:
+                entry["content"] = f"{content}\n\n{joined}" if content else joined
+                return
+            content = [{"type": "text", "text": content}] if content else []
+            entry["content"] = content
+        content.extend(parts)
+        if joined:
+            content.append({"type": "text", "text": joined})
+        return
+    if parts:
+        parts = parts + ([{"type": "text", "text": joined}] if joined else [])
+    out.append({"role": "user", "content": parts or joined})
 
 
 def _assistant_to_openai(message: Message, echo_reasoning: bool) -> dict[str, Any]:
@@ -155,7 +289,10 @@ def _result_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "\n".join(b.get("text") or "" for b in content if isinstance(b, dict))
+        # Blocks without text (an image) are skipped, not joined as empty lines.
+        return "\n".join(
+            block["text"] for block in content if isinstance(block, dict) and block.get("text")
+        )
     return "" if content is None else str(content)
 
 

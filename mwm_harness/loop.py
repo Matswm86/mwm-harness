@@ -683,7 +683,9 @@ class Session:
                 self.bus.emit(
                     ev.ToolFinished(call["id"], call["name"], result.content, result.is_error)
                 )
-                results.append(tool_result_block(call["id"], result.content, result.is_error))
+                results.append(
+                    tool_result_block(call["id"], result.content, result.is_error, result.images)
+                )
                 continue
             if self._blind_fix_blocked(call):
                 note = (
@@ -707,7 +709,9 @@ class Session:
             self.bus.emit(
                 ev.ToolFinished(call["id"], call["name"], result.content, result.is_error)
             )
-            results.append(tool_result_block(call["id"], result.content, result.is_error))
+            results.append(
+                tool_result_block(call["id"], result.content, result.is_error, result.images)
+            )
         self._add(Message("user", results))
         return cancelled
 
@@ -753,7 +757,7 @@ class Session:
             return ToolResult(WITHHELD, True)
         if counts:
             self.bus.emit(ev.Notice("info", f"{call['name']}: {describe(counts)}"))
-        return ToolResult(text, result.is_error)
+        return ToolResult(text, result.is_error, result.images)
 
     def _clean(self, text: str) -> str:
         """Hook notes that go to the model: same redaction, same fail-closed rule."""
@@ -858,7 +862,7 @@ class Session:
                 self.bus.emit(ev.HookBlocked("PostToolUse", post.reason))
             joined = "\n\n".join(f for f in feedback if f)
             note = reminder("PostToolUse hook feedback:\n" + joined)
-            result = ToolResult(f"{result.content}\n\n{note}", result.is_error)
+            result = ToolResult(f"{result.content}\n\n{note}", result.is_error, result.images)
         return result
 
     async def run_checks(self, files: list[Path] | None = None) -> list[CheckResult]:

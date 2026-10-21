@@ -61,6 +61,11 @@ class ModelSpec:
     thinking_field: str = ""
     echo_reasoning: bool = False
     parallel_tool_calls: bool = True
+    # True only when the endpoint was measured taking an ``image_url`` part AND
+    # reading the picture correctly (spike/spike_vision.py, recorded in COMPAT.md).
+    # A text-only model that is sent an image fails the whole request, so images
+    # are replaced by a note naming the file unless this is set.
+    vision: bool = False
     extra_body: dict[str, Any] = field(default_factory=dict)
 
 

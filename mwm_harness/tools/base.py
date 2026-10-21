@@ -15,6 +15,10 @@ from mwm_harness.sandbox import Sandbox
 class ToolResult:
     content: str
     is_error: bool = False
+    # Image blocks (see messages.image_block) to attach to the tool result. The
+    # loop puts them in the result's content list, so a vision model sees the
+    # picture and a text model gets a note naming the file instead.
+    images: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

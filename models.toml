@@ -13,6 +13,11 @@ family = "qwen"
 context_window = 1000000
 soft_budget = 200000
 thinking_field = "enable_thinking"
+# Measured 2026-10-21: spike/spike_vision.py on the payg twin read the two drawn
+# range levels of a gold frame (1.13245 / 1.17879, five decimals, not round axis
+# values) exactly, and an interactive read on THIS endpoint confirmed the same
+# frame. COMPAT.md has the table.
+vision = true
 
 [models."kimi-k2.7-code"]
 family = "kimi"
@@ -31,6 +36,9 @@ family = "qwen"
 context_window = 1000000
 soft_budget = 200000
 thinking_field = "enable_thinking"
+# Measured 2026-10-21 on the payg twin: read the same gold frame's drawn levels
+# exactly, four times faster than qwen3.8-max. COMPAT.md has the table.
+vision = true
 
 # Different family from Qwen, which is what the critic needs: a model that reviews
 # Qwen's work must not share Qwen's blind spots. glm-5.3 is on the plan key's
@@ -120,6 +128,9 @@ soft_budget = 26000
 # WARNING: Groq lists this id as a PREVIEW model that may be discontinued. It is
 # one entry here plus MWM_CLAUDE_REPLACEMENT, so swapping it out is a config edit.
 # The id contains a slash because that is the literal model name Groq expects.
+# vision stays OFF: the 2026-10-21 spike shows it takes the image and reads the
+# price axis in 0.9s, but it missed both drawn range levels of the gold frame,
+# so a chart answer from it would look confident and be wrong.
 [models."qwen/qwen3.8-27b"]
 family = "qwen"
 base_url = "https://api.groq.com/openai/v1"
@@ -141,6 +152,10 @@ key_env = "BAILIAN_API_KEY"
 context_window = 1000000
 soft_budget = 200000
 thinking_field = "enable_thinking"
+# Measured 2026-10-21 by spike/spike_vision.py against this endpoint: gold frame
+# r2-d7a82d2e6f5b, 9 of 18 graded values including both drawn range levels read
+# exactly, 64s. The cheap lane for headless vision. COMPAT.md has the table.
+vision = true
 
 [models."payg-qwen3.8-max"]
 api_model = "qwen3.8-max"
@@ -150,3 +165,7 @@ key_env = "BAILIAN_API_KEY"
 context_window = 1000000
 soft_budget = 200000
 thinking_field = "enable_thinking"
+# Measured 2026-10-21 by spike/spike_vision.py against this endpoint: both drawn
+# range levels of the gold frame read exactly, but 110s to 239s per frame and up
+# to 13,586 output tokens of reasoning. Works; flash is the cheaper vision lane.
+vision = true

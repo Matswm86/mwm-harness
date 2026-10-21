@@ -75,3 +75,30 @@ Ollama load.
   direction, not a significant gap. The 4B's 3/6 came from the contaminated
   2026-10-04 runs; its clean reruns passed both tasks in 177-181 s.
 
+
+## 2026-10-21: vision, measured on gold-set frames
+
+`spike/spike_vision.py` sends frames from `data/videos/gold/graded.jsonl` (graded
+by the Opus round of 2026-09-19) as one `image_url` data URL in a user message and
+asks for every price level on the chart. A graded value counts as found when the
+answer holds a number within 0.05% of it. Raw chunks: `spike/out/vision-*.jsonl`.
+
+The decisive frame is r2-d7a82d2e6f5b (sp8F_a06Z9E, frame 00001000.jpg): EURUSD
+daily with a drawn range of 1.13245 to 1.17879 and interior lines at about
+1.16721 / 1.15562 / 1.14420. The two range values are five-decimal and are NOT
+round axis labels, so reading them exactly is the proof that the model saw the
+drawn chart and not just the right-axis ladder. Every model below listed the axis
+ladder; only some read the drawn lines.
+
+| model | endpoint | accepted the image | drawn levels read exactly | graded values found | in / out tokens | seconds | note |
+|---|---|---|---|---|---|---|---|
+| payg-qwen3.8-flash | dashscope-intl | yes | 1.13245 and 1.17879 | 9/18 | 1000 / 3342 | 64.0 | the cheap headless vision lane |
+| payg-qwen3.8-max | dashscope-intl | yes | 1.13245 and 1.17879 | 7/18, then 2/2 on a second frame | 962 / 6848, then 962 / 13586 | 109.6, then 238.8 | correct but slow and think-heavy |
+| qwen3.8-max | token-plan | yes | 1.13245 and 1.17879 | interactive read, same frame | not metered | not metered | read inside Qwen Code on 2026-10-21; a SCRIPT call on this endpoint is forbidden by the plan terms, so it cannot be spiked |
+| qwen/qwen3.8-27b | groq | yes | neither | 10/18 | 839 / 310 | 0.9 | read the axis ladder only; vision stays OFF |
+| qwen3-vl-4b-instruct-16k | ollama | yes | 1.17870 (within tolerance), missed 1.13245 | 4/18 | 1147 / 200 | 24.8 | partial; vision stays OFF |
+
+The registry's `vision` flag follows this table: it is set only where the model
+both took the image and read the drawn levels. A model without the flag gets a
+text note naming the file instead of the bytes, because an image sent to a
+text-only model fails the whole request, not just the picture.

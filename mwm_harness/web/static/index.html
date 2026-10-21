@@ -1026,7 +1026,14 @@ function toolStarted(id, name, input, live) {
 }
 function toolFinished(id, content, isError, live) {
   const t = tools.get(id); if (!t) return;
-  const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  // A tool result can carry image blocks (messages.image_block): show the file
+  // each one points at, not a JSON dump of the block list.
+  const text = typeof content === "string" ? content
+    : Array.isArray(content)
+      ? content.map((b) => b && b.type === "image"
+          ? `[image: ${(b.source || {}).path || "?"}]`
+          : (b && b.text) || JSON.stringify(b)).join("\n")
+      : JSON.stringify(content, null, 2);
   t.card.className = "t" + (isError ? " err" : "");
   const first = (text.split("\n").find((l) => l.trim()) || "(empty)").slice(0, 200);
   const lines = text.split("\n").length;

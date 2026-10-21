@@ -9,6 +9,11 @@ model reads that file with Read (offset and limit) when it needs a part back.
 Only the request is changed. ``Session.messages`` and the transcript keep the
 full text, so hooks, compaction and resume see what the tool returned.
 
+Images follow the same age rule for a stronger reason: a frame is about a
+thousand tokens on every request it is in, so an old one keeps its path and
+loses its bytes. Switching packing off (``observation_pack_limit = 0``) therefore
+sends every image in the history with every request.
+
 Mechanism from SoL-Pi (Liu et al. 2026, arXiv 2609.20519, section on
 ObservationPack): 10 KiB limit, full for two requests, 1 KB excerpt.
 """
@@ -19,7 +24,7 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path
 
-from mwm_harness.messages import Block, Message, _result_text
+from mwm_harness.messages import Block, Message, _result_text, images_in
 
 PACK_LIMIT = 10 * 1024  # characters
 FULL_REQUESTS = 2
@@ -74,6 +79,10 @@ def pack_observations(
         blocks: list[Block] = []
         changed = False
         for block in message.content:
+            if block.get("type") == "tool_result":
+                stripped = drop_images(block)
+                if stripped is not block:
+                    block, changed = stripped, True
             text = _result_text(block.get("content")) if block.get("type") == "tool_result" else ""
             if len(text) > limit:
                 path = archive_path(scratch, text)
@@ -90,3 +99,23 @@ def pack_observations(
         out.append(replace(message, content=blocks) if changed else message)
     out.reverse()
     return out, errors
+
+
+def drop_images(block: Block) -> Block:
+    """Replace an old result's images with the paths they came from.
+
+    An image is re-sent, and re-paid for, on every request while it stays in the
+    history: about a thousand tokens per frame. A session that looks at charts
+    would carry all of them forever, so an image lives in requests only as long
+    as its result does. The file stays on disk and Read brings it back.
+    """
+    images = images_in(block)
+    if not images:
+        return block
+    text = _result_text(block.get("content"))
+    paths = ", ".join(str((image.get("source") or {}).get("path", "")) for image in images)
+    note = (
+        f"[{len(images)} image(s) left out of this older result; "
+        f"Read them again if you need to look: {paths}]"
+    )
+    return {**block, "content": f"{text}\n{note}" if text else note}

@@ -207,14 +207,16 @@ def test_http_error_status_is_a_tool_error(tmp_path):
 
 
 def test_render_result_saves_images_and_falls_back_to_structured(tmp_path):
-    text = render_result(
+    text, images = render_result(
         {"content": [{"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}]}, tmp_path
     )
     assert "image/png, 5 bytes" in text
     saved = list(tmp_path.glob("mcp-*.png"))
     assert saved and saved[0].read_bytes() == b"hello"
-    assert '"a": 1' in render_result({"structuredContent": {"a": 1}}, tmp_path)
-    assert render_result({}, tmp_path) == "(empty result)"
+    # The model is pointed at the file that was written, not at the raw bytes.
+    assert images[0]["source"]["path"] == str(saved[0])
+    assert '"a": 1' in render_result({"structuredContent": {"a": 1}}, tmp_path)[0]
+    assert render_result({}, tmp_path) == ("(empty result)", [])
 
 
 def test_session_runs_an_mcp_tool_behind_the_permission_rules(make_session, tmp_path):
