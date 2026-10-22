@@ -47,6 +47,8 @@ def bwrap_works() -> bool:
 # gets no API keys: names that look like secrets are dropped from its environment.
 SECRET_ENV = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY)", re.I)
 # Hidden from a sandboxed command altogether (an empty tmpfs is mounted over each).
+# Settings.sandbox_private_readable exempts a named folder, which then stays visible
+# and read-only; that is how a sandboxed git push reaches gh's stored credential.
 PRIVATE_DIRS = (".ssh", ".gnupg", ".aws", ".config/mwm-harness", ".config/gh", ".qwen")
 
 
@@ -67,10 +69,12 @@ class Sandbox:
         writable: list[Path],
         secret_env: frozenset[str] = frozenset(),
         env_keep: frozenset[str] = frozenset(),
+        private_readable: frozenset[str] = frozenset(),
     ) -> None:
         self.mode = mode
         self.secret_env = secret_env
         self.env_keep = env_keep
+        self.private_readable = private_readable
         if mode not in ("auto", "bwrap", "off"):
             raise ValueError(f"sandbox mode must be auto, bwrap or off, got {mode!r}")
         available = bwrap_works() if mode != "off" else False
@@ -98,6 +102,11 @@ class Sandbox:
         if not network:
             argv.append("--unshare-net")
         for name in PRIVATE_DIRS:
+            # An exempt folder keeps the read-only root bind it already has: a command
+            # can read the credential (which is what a git credential helper needs) but
+            # cannot rewrite it.
+            if name in self.private_readable:
+                continue
             private = Path.home() / name
             if private.is_dir() and not any(
                 w == private or private in w.parents for w in self.writable

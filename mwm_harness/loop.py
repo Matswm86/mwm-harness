@@ -207,6 +207,7 @@ class Session:
                 writable,
                 secret_env=frozenset(spec.key_env for spec in self.models.values()),
                 env_keep=frozenset(self.settings.bash_env_keep),
+                private_readable=frozenset(self.settings.sandbox_private_readable),
             ),
             output_cap=self.settings.tool_output_cap,
         )

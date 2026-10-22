@@ -80,7 +80,13 @@ BUILTIN_DENY = (
         "key material and credential stores are never read into a model's context",
         read=r"/\.ssh/|/\.gnupg/|/\.aws/|/\.config/mwm-harness/secrets\.env$|/\.qwen/settings\.json$"
         r"|/\.config/gh/hosts\.yml$|/\.netrc$|/\.git-credentials$",
-        bash=r"(/|~|\$HOME)[^\s|;&]*(\.ssh/id_|secrets\.env|\.git-credentials|\.netrc)|/proc/\w+/environ",
+        # .config/gh is readable inside the sandbox when sandbox_private_readable names
+        # it, so that git push can use gh's credential helper. What a command may not do
+        # is name that folder, print the token, or ask git for the stored credential:
+        # git push still works, because the helper runs below the command line.
+        bash=r"(/|~|\$HOME)[^\s|;&]*(\.ssh/id_|secrets\.env|\.git-credentials|\.netrc)"
+        r"|/proc/\w+/environ|\.config/gh\b|\bgh\s+auth\s+token\b|--show-token\b"
+        r"|\bgit\s+credential\s+(fill|get)\b",
     ),
     DenyRule(
         "vector-collection-delete",

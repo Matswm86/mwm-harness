@@ -152,6 +152,12 @@ class Settings:
     # Bash calls with network: true. ask = always ask the person, in every mode (default);
     # allow = the normal permission decision; deny = refused. Without it, no network.
     shell_network: str = "ask"
+    # Names from sandbox.PRIVATE_DIRS to leave visible inside the sandbox instead of
+    # hiding under an empty tmpfs. They stay read-only, because the root bind is. Name
+    # one only when a sandboxed command must authenticate with it: ".config/gh" lets
+    # git push reach GitHub through gh's credential helper. The secret-files deny rule
+    # still refuses a command that names the folder or prints the token.
+    sandbox_private_readable: list[str] = field(default_factory=list)
     extra_writable: list[str] = field(default_factory=list)
     # Folders outside the project that reading tools may open without asking. The
     # workspace root, the scratch folder and extra_writable are always included.
