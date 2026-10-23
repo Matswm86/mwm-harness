@@ -50,6 +50,19 @@ SECRET_ENV = re.compile(r"(API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIV
 # Settings.sandbox_private_readable exempts a named folder, which then stays visible
 # and read-only; that is how a sandboxed git push reaches gh's stored credential.
 PRIVATE_DIRS = (".ssh", ".gnupg", ".aws", ".config/mwm-harness", ".config/gh", ".qwen")
+GPU_DEVICE_GLOB = "nvidia*"
+
+
+# bwrap's --dev /dev is a fresh minimal devtmpfs holding none of the nodes the driver made
+# at boot, so nvidia-smi exits non-zero and CUDA fails inside the sandbox while the same
+# box is fine outside it. A machine with no NVIDIA driver matches nothing and binds nothing.
+def gpu_device_binds(dev: Path = Path("/dev")) -> list[str]:
+    """``--dev-bind`` pairs for every NVIDIA device node under ``dev``."""
+    argv: list[str] = []
+    for node in sorted(dev.glob(GPU_DEVICE_GLOB)):
+        if not node.is_dir():
+            argv += ["--dev-bind", str(node), str(node)]
+    return argv
 
 
 def scrubbed_env(
@@ -99,6 +112,7 @@ class Sandbox:
         if not self.enabled:
             return ["bash", "-c", command]
         argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        argv += gpu_device_binds()
         if not network:
             argv.append("--unshare-net")
         for name in PRIVATE_DIRS:
