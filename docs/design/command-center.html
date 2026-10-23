@@ -248,7 +248,11 @@ canvas#gl:active{cursor:grabbing}
     <span>Oslo <b id="oslo">--:--</b> · ET <b id="et">--:--</b></span>
     <span class="chip" id="sess">NY session</span>
     <span>MNQ <span class="px" id="mnqpx">30,657.50</span> <span id="mnqd" class="up">+18.00</span> <span class="sample">10 min delayed</span></span>
-    <span class="chip">50K Express <b>read-only</b> · flat <span class="sample">sample</span></span>
+    <!-- The account tier is deliberately generic: this repo is public and a tier names the
+         size of a real funded account, while Topstep is already named openly elsewhere here
+         (web/market.py, permissions.py, the live panel's index.html), so the firm is not the
+         sensitive part and the mockup must not drift from the panel it designs. -->
+    <span class="chip">prop account <b>read-only</b> · flat <span class="sample">sample</span></span>
     <span class="chip" title="Topstep flattens every position at 16:10 ET">flatten in <b id="flat">--</b></span>
   </header>
 

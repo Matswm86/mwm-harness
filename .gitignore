@@ -7,3 +7,13 @@ secrets.env
 *.jsonl
 spike/out/
 evals/out/
+# A pytest run that passes a relative --basetemp drops its whole temp tree in the repo.
+# 50 such files sat untracked here on 2026-10-23, one `git add -A` from being published.
+pytest-of-mm/
+# Design mockups stay local: they carry internal names (systemd timer units, hostnames,
+# the account tier). command-center.html is the exception, it is the approved phase 8
+# target and is tracked in scrubbed form. The `/*` form is required, not `docs/design/`:
+# git cannot re-include a file whose parent directory is excluded, so ignoring the
+# directory itself would make the negation below dead.
+docs/design/*
+!docs/design/command-center.html
