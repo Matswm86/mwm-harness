@@ -64,7 +64,9 @@ LIVE_EVENTS = (
     ev.SubagentFinished,
 )
 MAX_LIVE_EVENTS = 2000
-SIDE_COMMANDS = ("/check", "/runit", "/trace")  # slash commands that run as background tasks
+# Slash commands that run as background tasks. A review is a model call over the turn's diff,
+# so it belongs here with the checks: it can take a minute and must not block the socket reader.
+SIDE_COMMANDS = ("/check", "/runit", "/trace", "/review")
 CLOSED_TABS_KEPT = 10
 
 
@@ -185,6 +187,7 @@ class Tab:
         self._writing: dict[str, str] = {}
         self.checks: dict[str, Any] | None = None  # the last ChecksFinished, for State
         self.runit: dict[str, Any] | None = None  # the last RunItFinished, for State
+        self.review: dict[str, Any] | None = None  # the last ReviewFinished, for State
         self._side_tasks: set[asyncio.Task[None]] = set()
         session.bus.subscribe(self.on_event)
         session.approver = self
@@ -207,6 +210,8 @@ class Tab:
             self.checks = payload
         elif isinstance(event, ev.RunItFinished):
             self.runit = payload
+        elif isinstance(event, ev.ReviewFinished):
+            self.review = payload["review"]
         if isinstance(event, ev.ToolStarted) and event.name in ("Write", "Edit", "MultiEdit"):
             self._writing[event.tool_use_id] = str(event.input.get("file_path") or "")
         elif isinstance(event, ev.ToolFinished) and event.tool_use_id in self._writing:
@@ -299,6 +304,7 @@ class Tab:
             "mcp": mcp_servers(session.mcp or self.panel.mcp),
             "checks": self.checks,
             "runit": self.runit,
+            "review": self.review,
         }
 
     def stop(self) -> bool:
@@ -384,6 +390,8 @@ class Tab:
             await self.run_mod(
                 str(message.get("key") or ""), str(message.get("prompt") or ""), reply
             )
+        elif kind == "review_comment":
+            self.review_action(message, reply)
         elif kind in ("tree", "open"):
             relative = str(message.get("path") or "")
             try:
@@ -410,7 +418,34 @@ class Tab:
                     }
                 )
 
-    # ----------------------------------------------------------------- mods
+    # ---------------------------------------------------------- review desk
+
+    def review_action(self, message: dict[str, Any], reply: asyncio.Queue[dict[str, Any]]) -> None:
+        """One Review Desk click: send comment N as the next turn, queue it, or remember it.
+
+        The review never edits a file. A comment reaches the agent only because the person sent
+        it, and it reaches them as their own turn text quoting file:line, so the transcript shows
+        who decided what.
+        """
+        try:
+            number = int(message.get("number") or 0)
+            if message.get("remember"):
+                path = self.session.remember(number)
+                reply.put_nowait(
+                    {"type": "ReviewSaved", "tab": self.id, "number": number, "path": str(path)}
+                )
+                return
+            text = self.session.comment_prompt(number, str(message.get("note") or "").strip())
+        except ValueError as exc:
+            reply.put_nowait({"type": "ReviewError", "tab": self.id, "text": str(exc)})
+            return
+        if message.get("queue"):
+            # Into the composer rather than away: the person usually has their own words to add.
+            reply.put_nowait({"type": "ReviewQueued", "tab": self.id, "text": text})
+            return
+        self.start_turn(text, reply)
+
+    # ------------------------------------------------------------------ mods
 
     def mod_values(self, prompt: str) -> dict[str, str]:
         return tab_values(self.panel.mods(), self.session.cwd, self.label, self.written, prompt)

@@ -52,6 +52,10 @@ HELP = """\
 /check                compile, lint and type-check the changed files (also runs after each editing turn)
 /runit [pytest args]  run the tests under coverage: which changed lines did a test execute
 /trace TEST           run one test (pytest node id) and list the calls it made, with argument values
+/review [file ...]    a second reader on the turn's diff: a walkthrough line per file plus comments
+                      with severity. Advice only, nothing is applied (also runs after an editing turn)
+/review-send N [note] send comment N of the last review as your next turn, quoting its file:line
+/review-remember N    keep comment N in .mwm/review-learnings.md: every later review is told it
 /compact [focus]      replace the history with a summary written by the model
 /init                 have the model write AGENTS.md (project rules) for this directory
 /resume               list earlier sessions for this directory (start with: mwm --resume ID)
@@ -137,6 +141,12 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
         return True
     if name == "/runit":
         await session.run_it(shlex.split(argument))
+        return True
+    if name == "/review":
+        files = [Path(p) for p in shlex.split(argument)] if argument.strip() else None
+        review = await session.run_review(files)
+        if review.status != "reviewed" and not review.files:
+            out.line(f"[review] {review.status}: {review.reason}")
         return True
     if name == "/trace":
         if not argument.strip():
@@ -258,6 +268,25 @@ class Printer:
         elif isinstance(event, ev.TraceFinished):
             for row in trace_lines(event.result):
                 self.line(self.paint(DIM, row), event)
+        elif isinstance(event, ev.ReviewStarted):
+            files = ", ".join(Path(f).name for f in event.files[:4])
+            more = "" if len(event.files) <= 4 else f" +{len(event.files) - 4}"
+            self.line(
+                self.paint(DIM, f"[review] {event.model} reading {files}{more} …"),
+                event,
+            )
+        elif isinstance(event, ev.ReviewFinished):
+            for row in review_lines(event.review):
+                if "[critical]" in row or "FAILED" in row:
+                    code = RED
+                elif "[suggestion]" in row:
+                    code = YELLOW
+                else:
+                    code = DIM
+                self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.ReviewComment):
+            mark = "remembered" if event.remember else "queued as your next turn"
+            self.line(self.paint(DIM, f"[review] {event.file}:{event.line} {mark}"), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
 
@@ -288,6 +317,42 @@ def trace_lines(result: dict[str, Any]) -> list[str]:
         )
     if result["skipped"]:
         rows.append(f"  … {result['skipped']} deeper or later call(s) not shown")
+    return rows
+
+
+def review_lines(review: dict[str, Any]) -> list[str]:
+    """The Review Desk's verdict as plain lines. A review only advises: nothing here was applied."""
+    if review["status"] != "reviewed":
+        return [f"[review] {review['status'].upper()}: {review['reason']}"]
+    files = review["files"]
+    rows = [
+        f"[review] {review['model']} read {len(files)} file(s), "
+        f"+{sum(f['added'] for f in files)}/-{sum(f['removed'] for f in files)} "
+        f"in {review['seconds']:.0f}s: {len(review['comments'])} comment(s)"
+    ]
+    if review["summary"]:
+        rows.append(f"  {review['summary']}")
+    for change in files:
+        mark = "new " if change["new"] else ""
+        cut = " …longer than shown" if change["truncated"] else ""
+        rows.append(f"  {mark}{change['path']} (+{change['added']}/-{change['removed']}){cut}")
+        if change["walkthrough"]:
+            rows.append(f"    {change['walkthrough']}")
+        if change["callers"]:
+            rows.append(f"    called by: {', '.join(change['callers'][:6])}")
+    for number, comment in enumerate(review["comments"], 1):
+        where = f"{comment['file']}:{comment['line']}"
+        rows.append(f"  {number}. {where} [{comment['severity']}] {comment['text']}")
+        if comment["fix"]:
+            rows.append(f"     fix: {comment['fix']}")
+    if review["dropped"]:
+        rows.append(f"  {review['dropped']} comment(s) dropped: they pointed outside the diff")
+    rows.append("  advice only, nothing applied")
+    if review["comments"]:
+        rows.append(
+            "  /review-send N [note] makes comment N your next turn, "
+            "/review-remember N keeps it for every later review"
+        )
     return rows
 
 
@@ -415,6 +480,19 @@ def run_command(
             tools = ", ".join(agent.tools) if agent.tools else "all tools"
             out.line(f"  {agent.name:<32} model {agent.model or 'inherit':<8} {tools[:70]}")
         out.line(f"{len(session.agents)} agents")
+    elif name == "/review-send":
+        number, _, note = argument.partition(" ")
+        try:
+            return session.comment_prompt(int(number), note.strip())
+        except ValueError as exc:
+            out.line(f"usage: /review-send N [your note] ({exc})")
+    elif name == "/review-remember":
+        try:
+            path = session.remember(int(argument))
+        except ValueError as exc:
+            out.line(f"usage: /review-remember N ({exc})")
+        else:
+            out.line(f"kept in {path}: every later review of this repo is told it")
     elif name == "/init":
         return INIT_PROMPT + (f"\n\nExtra instructions: {argument}" if argument else "")
     elif name == "/jev":

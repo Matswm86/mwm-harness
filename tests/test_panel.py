@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from mwm_harness.providers import chunks_for
 from mwm_harness.web.server import create_app
@@ -249,3 +251,69 @@ def test_check_results_reach_the_page_and_stay_in_the_tab_state(make_session):
         state = until(ws, "State")[-1]
         assert state["checks"]["results"] == finished["results"]
         assert state["runit"] is None
+
+
+REVIEW_ANSWER = json.dumps(
+    {
+        "summary": "One new file: a helper that can hand back None.",
+        "files": [
+            {"path": "a.py", "walkthrough": "adds helper(), which returns None for an empty list"}
+        ],
+        "comments": [
+            {
+                "file": "a.py",
+                "line": 2,
+                "severity": "critical",
+                "text": "helper() returns None, and the caller passes that straight on",
+                "fix": "return an empty list instead",
+            }
+        ],
+    }
+)
+
+
+def test_the_review_desk_reaches_the_page_and_its_buttons_answer(make_session):
+    source = "def helper(items):\n    return items[0]\n"
+    turns = [
+        chunks_for(tool_calls=[("Write", {"file_path": "a.py", "content": source})]),
+        chunks_for("Written."),
+        chunks_for(REVIEW_ANSWER),
+        chunks_for("Fixed it."),
+    ]
+    session, _, provider = make_session(turns, mode="acceptEdits")
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "prompt", "text": "write it"})
+        seen = until(ws, "TurnEnded")
+        started = next(m for m in seen if m["type"] == "ReviewStarted")
+        assert started["files"] == ["a.py"] and started["model"]
+        payload = next(m for m in seen if m["type"] == "ReviewFinished")["review"]
+        assert payload["status"] == "reviewed"
+        assert payload["files"][0]["walkthrough"].startswith("adds helper()")
+        assert payload["comments"][0]["severity"] == "critical"
+        kinds = [m["type"] for m in seen]
+        assert kinds.index("ReviewFinished") < kinds.index("TurnEnded")
+
+        ws.send_json({"type": "state"})
+        assert until(ws, "State")[-1]["review"] == payload  # a reconnect redraws the same desk
+
+        ws.send_json({"type": "review_comment", "number": 1, "queue": True})
+        assert until(ws, "ReviewQueued")[-1]["text"].startswith(
+            "Review comment on a.py:2 (critical,"
+        )
+
+        ws.send_json({"type": "review_comment", "number": 1, "remember": True})
+        assert until(ws, "ReviewSaved")[-1]["path"].endswith(".mwm/review-learnings.md")
+        assert (session.cwd / ".mwm" / "review-learnings.md").is_file()
+
+        ws.send_json({"type": "review_comment", "number": 4})
+        assert "no comment 4" in until(ws, "ReviewError")[-1]["text"]
+
+        ws.send_json({"type": "review_comment", "number": 1})
+        until(ws, "TurnEnded")
+    prompts = [m["content"] for m in provider.requests[-1]["messages"] if m["role"] == "user"]
+    assert prompts[-1].startswith("Review comment on a.py:2 (critical,")
+    assert (session.cwd / "a.py").read_text() == source  # advice only: the review wrote nothing

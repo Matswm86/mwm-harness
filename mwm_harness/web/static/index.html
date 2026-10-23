@@ -263,6 +263,36 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
 .result .files button{all:unset;cursor:pointer;font:11px var(--mono);padding:1px 7px;border:1px solid var(--line);border-radius:4px;color:var(--muted)}
 .result .files button:hover{color:var(--text);border-color:var(--line-hi)}
 .result .full{font:12.5px/1.55 var(--display);color:var(--muted);white-space:pre-wrap;max-width:80ch;border-top:1px solid var(--line);padding-top:10px}
+/* review desk: one turn's change stack, a second reader's walkthrough and its line comments */
+.review{padding:14px 18px;display:grid;gap:12px;align-content:start;overflow:auto}
+.review .kicker{display:flex;gap:8px;align-items:center;font:500 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.review .summary{margin:0;font:12.5px/1.55 var(--display);max-width:80ch}
+.review .file{border:1px solid var(--line);border-radius:8px;background:var(--pane);overflow:hidden}
+.review .file>header{display:flex;gap:10px;align-items:baseline;padding:7px 10px;border-bottom:1px solid var(--line);background:var(--pane-hi)}
+.review .file>header b{all:unset;cursor:pointer;font:500 12px var(--mono);color:var(--text)}
+.review .file>header b:hover,.review .file>header b:focus-visible{color:var(--cyan)}
+.review .file>header .n{font:10.5px var(--mono);color:var(--muted)}
+.review .walk{padding:7px 10px;font:12.5px/1.5 var(--display);color:var(--muted);border-bottom:1px solid var(--line)}
+.review .callers{padding:5px 10px;font:10.5px var(--mono);color:var(--faint);border-bottom:1px solid var(--line)}
+.review pre{margin:0;padding:8px 10px;font:11.5px/1.6 var(--mono);overflow:auto;max-height:280px;white-space:pre}
+.review pre div{padding:0 2px}
+.review pre div.add{color:var(--ok);background:rgba(110,231,168,.08);cursor:pointer}
+.review pre div.del{color:var(--alert);background:rgba(255,107,91,.08)}
+.review pre div.hunk{color:var(--violet)}
+.review pre div.add:hover{outline:1px solid var(--line-hi)}
+.review .cmt{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-top:1px solid var(--line)}
+.review .cmt .who{font:10.5px var(--mono);color:var(--faint);white-space:nowrap;padding-top:3px;cursor:pointer}
+.review .cmt .who:hover{color:var(--cyan)}
+.review .cmt .body{flex:1;min-width:0}
+.review .cmt .body p{margin:0;font:12.5px/1.5 var(--display)}
+.review .cmt .body .fix{color:var(--muted);font:11.5px/1.5 var(--mono);margin-top:3px}
+.review .cmt .acts{display:flex;gap:5px;flex:none}
+.review .cmt button{all:unset;cursor:pointer;font:10.5px var(--mono);padding:2px 7px;border:1px solid var(--line);border-radius:4px;color:var(--muted)}
+.review .cmt button:hover,.review .cmt button:focus-visible{color:var(--text);border-color:var(--line-hi)}
+.review .cmt.critical button.go{border-color:var(--alert);color:var(--alert)}
+.review .cmt .tag{flex:none;margin-top:1px}
+.review .foot{font:10.5px/1.6 var(--mono);color:var(--faint);max-width:80ch}
+#vreview .n{margin-left:5px;padding:0 4px;border-radius:6px;background:var(--gold);color:#0a0d14;font:600 9.5px var(--mono)}
 
 /* ---------- right: chart strip over the workbench ---------- */
 .right{grid-area:right;display:grid;grid-template-rows:var(--rchart,240px) 10px minmax(0,1fr);min-height:0}
@@ -460,15 +490,18 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
         <div class="seg" role="group" aria-label="Workbench view">
           <button aria-pressed="true" data-view="code">Code</button>
           <button aria-pressed="false" data-view="result" id="vresult">Result</button>
+          <button aria-pressed="false" data-view="review" id="vreview">Review</button>
         </div>
         <div class="ftabs" role="tablist" id="ftabs"></div>
         <span class="live still" id="cstate">idle</span>
         <button class="iconbtn" id="undo" title="Put back the files the last file-changing turn wrote with Write or Edit (/undo). Bash changes are not undone.">undo turn</button>
         <button class="iconbtn" id="runit" title="Run the tests under coverage and colour the changed lines: green = a test ran it, red = no test did (/runit)">run it</button>
+        <button class="iconbtn" id="desk" title="Ask the second reader about this turn's changes (/review). It writes walkthrough lines and comments, and applies nothing.">review</button>
         <button class="iconbtn" id="fold" aria-expanded="true" title="Fold to one line">fold</button>
       </header>
       <div class="view" id="viewer"></div>
       <div class="view result" id="result" hidden></div>
+      <div class="view review" id="reviewview" hidden></div>
       <div class="lineinfo" id="lineinfo" hidden aria-live="polite"></div>
       <footer><span id="cstat"></span><span id="cnote">shows Edit and Write calls as they arrive; click a file to read it</span></footer>
     </section>
@@ -727,11 +760,14 @@ function fileContent(e) { openFiles.set(e.path, { kind: "file", path: e.path, co
 function setView(v) {
   view = v;
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
-  $("viewer").hidden = v !== "code"; $("result").hidden = v !== "result"; $("ftabs").hidden = v !== "code";
-  $("cnote").textContent = v === "code" ? "shows Edit and Write calls as they arrive; click a file to read it" : "every finished turn leaves this card; older ones sit under Outputs";
+  $("viewer").hidden = v !== "code"; $("result").hidden = v !== "result"; $("reviewview").hidden = v !== "review";
+  $("ftabs").hidden = v !== "code";
+  $("cnote").textContent = v === "code" ? "shows Edit and Write calls as they arrive; click a file to read it"
+    : v === "review" ? "a second reader's walkthrough of this turn's changes: advice only, it applies nothing"
+    : "every finished turn leaves this card; older ones sit under Outputs";
   if ($("rightcol").classList.contains("min-code")) setIdle(false);
 }
-document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (b.dataset.view === "result") { const o = (outputs.get(session) || [])[0]; if (o) openOutput(o); else { setView("result"); $("result").replaceChildren(el("div", "blank", "No finished turn in this tab yet.")); } } else setView("code"); });
+document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => { if (b.dataset.view === "result") { const o = (outputs.get(session) || [])[0]; if (o) openOutput(o); else { setView("result"); $("result").replaceChildren(el("div", "blank", "No finished turn in this tab yet.")); } } else if (b.dataset.view === "review") { drawReview(); setView("review"); } else setView("code"); });
 function setIdle(on) {  // the workbench folds to its header and the chart takes the space
   setMin("code", on);
   $("fold").textContent = on ? "open" : "fold"; $("fold").setAttribute("aria-expanded", String(!on));
@@ -909,10 +945,113 @@ function traceFinished(e) {
   if (r.tail) { const pre = el("pre"); pre.textContent = r.tail; box.append(pre); }
   setLive(false, "traced"); setView("result");
 }
+
+/* ---------------- review desk: a second reader over this turn's diff ---------------- */
+const reviewsByTab = new Map();  // tab id -> the review dict of its last reviewed turn
+const SEV_TAG = { critical: "kill", suggestion: "warn", note: "ship" };
+function reviewTag(r) {
+  if (r.status === "skipped") return ["warn", "SKIPPED"];
+  if (r.status !== "reviewed") return ["kill", "NOT REVIEWED"];
+  const n = r.comments.length;
+  if (!n) return ["pass", "REVIEWED · CLEAN"];
+  return [r.comments.some((c) => c.severity === "critical") ? "kill" : "warn", `REVIEWED · ${n} COMMENT${n === 1 ? "" : "S"}`];
+}
+function reviewWord(r) {
+  const [, word] = reviewTag(r);
+  return r.status === "reviewed" ? `review: ${word.toLowerCase()}` : `review ${r.status}`;
+}
+function drawReview() {
+  const box = $("reviewview"), r = reviewsByTab.get(session); box.replaceChildren();
+  const badge = $("vreview").querySelector(".n"); if (badge) badge.remove();
+  if (!r) { box.append(el("div", "blank", "After a turn that writes files, a second reader reports here. It applies nothing.")); return; }
+  const [cls, word] = reviewTag(r);
+  const kicker = el("div", "kicker");
+  kicker.append(el("span", `verdict-tag ${cls}`, word), el("span", null, `${r.model} · ${r.seconds.toFixed(1)} s · advice only`));
+  box.append(kicker);
+  if (r.status !== "reviewed") { box.append(el("p", "summary", r.reason)); return; }
+  if (r.summary) box.append(el("p", "summary", r.summary));
+  const listed = new Set(r.files.map((f) => f.path));
+  r.files.forEach((f) => box.append(reviewFile(r, f)));
+  r.comments.forEach((c, i) => { if (!listed.has(c.file)) box.append(reviewComment(c, i + 1, r.root)); });
+  const foot = [r.dropped ? `${r.dropped} comment(s) left out: they pointed at a line the diff never touched` : "",
+    "nothing here was applied to a file: send a comment as your next turn, or remember it for every later review"].filter(Boolean);
+  box.append(el("div", "foot", foot.join(" · ")));
+  if (r.comments.length) $("vreview").appendChild(el("span", "n", String(r.comments.length)));
+}
+function reviewFile(r, f) {
+  const card = el("section", "file");
+  const head = el("header");
+  const name = el("b", null, f.path); name.tabIndex = 0; name.title = "Open this file in the code view";
+  name.onclick = () => { pendingReveal = { path: `${r.root}/${f.path}`, line: 1 }; openFile(relOf(`${r.root}/${f.path}`)); };
+  name.onkeydown = (ev) => { if (ev.key === "Enter") name.onclick(); };
+  const size = `${f.new ? "new · " : ""}+${f.added} / -${f.removed}${f.truncated ? " · cut to fit" : ""}`;
+  head.append(name, el("span", "n", size)); card.append(head);
+  if (f.walkthrough) card.append(el("div", "walk", f.walkthrough));
+  if ((f.callers || []).length) card.append(el("div", "callers", `called by ${f.callers.length}: ${f.callers.slice(0, 6).join(", ")}${f.callers.length > 6 ? ", …" : ""}`));
+  if ((f.unresolved || []).length) card.append(el("div", "callers", `resolved only at run time: ${f.unresolved.slice(0, 6).join(", ")}${f.unresolved.length > 6 ? ", …" : ""}`));
+  card.append(diffBlock(r, f));
+  r.comments.forEach((c, i) => { if (c.file === f.path) card.append(reviewComment(c, i + 1, r.root)); });
+  return card;
+}
+function diffBlock(r, f) {
+  const pre = el("pre"); let at = 0;
+  f.diff.split("\n").forEach((line) => {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line);
+    if (hunk) { at = Number(hunk[1]); pre.append(el("div", "hunk", line)); return; }
+    if (line.startsWith("+++") || line.startsWith("---")) { pre.append(el("div", "hunk", line)); return; }
+    const added = line.startsWith("+"), removed = line.startsWith("-");
+    const cls = added ? "add" : removed ? "del" : "";
+    const row = el("div", cls, `${added || !removed ? String(at).padStart(4, " ") : "    "} ${line}`);
+    if (added || !removed) {
+      row.tabIndex = 0; row.title = `Open ${f.path} at line ${at}`;
+      const jump = () => { pendingReveal = { path: `${r.root}/${f.path}`, line: at }; openFile(relOf(`${r.root}/${f.path}`)); };
+      row.onclick = jump; row.onkeydown = (ev) => { if (ev.key === "Enter") jump(); };
+      at += 1;
+    }
+    pre.append(row);
+  });
+  return pre;
+}
+function reviewComment(c, number, root) {
+  const row = el("div", `cmt ${c.severity}`);
+  const who = el("span", "who", `${number}. ${c.file}:${c.line}`); who.tabIndex = 0;
+  const jump = () => { pendingReveal = { path: `${root}/${c.file}`, line: c.line }; openFile(relOf(`${root}/${c.file}`)); };
+  who.onclick = jump; who.onkeydown = (ev) => { if (ev.key === "Enter") jump(); };
+  row.append(who, el("span", `verdict-tag tag ${SEV_TAG[c.severity] || "ship"}`, c.severity));
+  const body = el("div", "body"); body.append(el("p", null, c.text));
+  if (c.fix) body.append(el("div", "fix", "its fix: " + c.fix));
+  row.append(body);
+  const acts = el("div", "acts");
+  const open = el("button", null, "open"); open.type = "button"; open.title = `Show ${c.file} at line ${c.line}`; open.onclick = jump;
+  const go = el("button", "go", "send as my turn"); go.type = "button";
+  go.title = "The agent gets this as your next turn, quoting the file and line. It applies nothing on its own.";
+  go.onclick = () => { setLive(true, `sending comment ${number} as your turn`); send({ type: "review_comment", number }); };
+  const queue = el("button", null, "into the composer"); queue.type = "button";
+  queue.title = "Put the text in your input box so you can add your own decision before sending";
+  queue.onclick = () => send({ type: "review_comment", number, queue: true });
+  const keep = el("button", null, "remember"); keep.type = "button";
+  keep.title = "Write it to .mwm/review-learnings.md, kept out of the clone: every later review of this repo is told it";
+  keep.onclick = () => send({ type: "review_comment", number, remember: true });
+  acts.append(open, go, queue, keep); row.append(acts);
+  return row;
+}
+function reviewStarted(e) { setLive(true, `${e.model} reading ${e.files.length} changed file${e.files.length === 1 ? "" : "s"}`); }
+function reviewFinished(e) {
+  const r = e.review; reviewsByTab.set(session, r); drawReview(); setLive(false, reviewWord(r));
+  const critical = r.status === "reviewed" && r.comments.some((c) => c.severity === "critical");
+  if (critical && view !== "review") setView("review");  // a defect worth seeing without hunting for the tab
+}
+function reviewQueued(e) {
+  const box = $("input"); box.value = e.text; box.focus();
+  box.dispatchEvent(new Event("input"));  // grow the box and drop the slash menu, as typing would
+  box.setSelectionRange(e.text.length, e.text.length);
+}
+
 function stopAll() { send({ type: "stop_all" }); }
 $("stopall").onclick = stopAll;
 $("undo").onclick = () => send({ type: "prompt", text: "/undo" });
 $("runit").onclick = () => { setLive(true, "running the tests under coverage"); send({ type: "prompt", text: "/runit" }); };
+$("desk").onclick = () => { setLive(true, "asking the second reader about this turn"); send({ type: "prompt", text: "/review" }); };
 function checksStarted(e) { setLive(true, `checking ${e.files.length} file${e.files.length === 1 ? "" : "s"}`); $("checksum").textContent = "running"; }
 function checksFinished(e) {
   checksByTab.set(session, e); drawChecks(); if (turn) turn.checks = checkSummary(e);
@@ -1333,6 +1472,8 @@ function loadState(s) {
   if (s.checks) checksByTab.set(session, s.checks); else checksByTab.delete(session);
   if (s.runit) runitByTab.set(session, s.runit); else runitByTab.delete(session);
   drawChecks();
+  if (s.review) reviewsByTab.set(session, s.review); else reviewsByTab.delete(session);
+  drawReview();
   drawOutputs(); const n = $("vresult").querySelector(".n"); if (n) n.remove();
   if ((outputs.get(session) || []).length) $("vresult").appendChild(el("span", "n", String(outputs.get(session).length)));
   approvals.length = 0; s.approvals.forEach((a) => approvals.push(a)); showApproval();
@@ -1356,6 +1497,12 @@ const handlers = {
   ChecksFinished: checksFinished,
   RunItFinished: runitFinished,
   TraceFinished: traceFinished,
+  ReviewStarted: reviewStarted,
+  ReviewFinished: reviewFinished,
+  ReviewComment: () => {},  // the desk clicked remember: the note below is the confirmation
+  ReviewSaved: (e) => note("info", `remembered in ${e.path}: every later review of this repo is told it`),
+  ReviewQueued: reviewQueued,
+  ReviewError: (e) => note("warn", e.text),
   ToolStarted: (e) => { if (streaming.size) endStreams(); toolStarted(e.tool_use_id, e.name, e.input, true); },
   ToolFinished: (e) => toolFinished(e.tool_use_id, e.content, e.is_error, true),
   HookBlocked: (e) => note("block", `[${e.event} hook blocked] ${e.reason}`),
@@ -1385,7 +1532,7 @@ const handlers = {
   Transcript: transcriptLoaded,
   Mods: (e) => drawMods(e.mods),
   Tabs: (e) => { tabList = e.tabs; closedTabs = e.closed || []; renderSessions(); if (e.active) switchTo(e.active); },
-  TabClosed: (e) => { outputs.delete(e.tab); if (e.tab === session) switchTo((tabList.find((t) => t.id !== e.tab) || {}).id || ""); },
+  TabClosed: (e) => { outputs.delete(e.tab); reviewsByTab.delete(e.tab); if (e.tab === session) switchTo((tabList.find((t) => t.id !== e.tab) || {}).id || ""); },
 };
 
 /* ---------------- session tabs ---------------- */
@@ -1475,7 +1622,9 @@ const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["age
   ["models", "list models"], ["think", "show thinking on/off"], ["permissions", "file, shell, web rules"], ["hooks", "loaded hooks"],
   ["skills", "loaded skills"], ["memory", "memory files"], ["resume", "resume a session"], ["init", "write a project note"],
   ["commands", "all commands"], ["check", "lint + type-check changed files"], ["runit", "which changed lines tests run"],
-  ["trace", "calls one test makes"], ["undo", "put back the last turn's file changes"], ["stop", "stop all: emergency stop"], ["clear", "clear the history"], ["help", "help"]];
+  ["trace", "calls one test makes"], ["review", "a second reader over this turn's changes"],
+  ["review-send", "send comment N of the last review as your next turn"], ["review-remember", "keep comment N for every later review"],
+  ["undo", "put back the last turn's file changes"], ["stop", "stop all: emergency stop"], ["clear", "clear the history"], ["help", "help"]];
 const input = $("input"), menu = $("menu"); let sel = 0, shown = [];
 SLASH.slice(0, 7).forEach(([c]) => { const b = el("button", null, "/" + c); b.type = "button"; b.onclick = () => { input.value = "/" + c; input.focus(); drawMenu(); }; $("slashbar").append(b); });
 function drawMenu() {
