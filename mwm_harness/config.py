@@ -201,6 +201,15 @@ class Settings:
     agent_models: dict[str, str] = field(default_factory=dict)  # e.g. opus = "qwen3.8-max"
     # Run the check chain (checks.default.toml) on the files a turn changed, before it ends.
     checks_after_turn: bool = True
+    # Review Desk: after a turn that wrote files, a second reader on another model reads its diff
+    # and leaves comments. It never edits anything; the person sends or remembers each comment.
+    review_after_turn: bool = True
+    review_model: str = (
+        "critic"  # a models.toml id or an agent_models key; "" = this session's model
+    )
+    # A folder of PID-stamped ".active-<pid>" locks. A live lock means another reviewer already
+    # runs, so this one is skipped and says so; a skip is never reported as a review.
+    review_lock_dir: str = ""
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

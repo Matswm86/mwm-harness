@@ -18,7 +18,14 @@ from typing import Any
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
-from mwm_harness.config import EFFORTS, ModelSpec, Settings, config_dir, workspace_root
+from mwm_harness.config import (
+    EFFORTS,
+    ModelSpec,
+    Settings,
+    config_dir,
+    is_subscription_endpoint,
+    workspace_root,
+)
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.costwatch import TurnCostWatch, log_spike
 from mwm_harness.hooks import HookEngine, load_registrations
@@ -34,6 +41,19 @@ from mwm_harness.observation_pack import pack_observations
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
 from mwm_harness.redact import WITHHELD, Redactor, describe
+from mwm_harness.review import (
+    SECURITY_EXTRA,
+    Comment,
+    Review,
+    call_model,
+    collect_changes,
+    comment_text,
+    exclude_from_git,
+    lock_held,
+    remember_comment,
+    review_changes,
+    skipped_names,
+)
 from mwm_harness.runit import (
     RunItResult,
     TraceResult,
@@ -229,6 +249,7 @@ class Session:
         self.touched: list[str] = []
         self.written: list[Path] = []  # files this turn wrote, for the check runner
         self.undo_log = UndoLog()  # what each recent turn's writes replaced, for /undo
+        self.review: Review | None = None  # the Review Desk's last pass, comments included
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -619,6 +640,7 @@ class Session:
                         )
                     )
                 await self.run_checks()
+                await self._review_turn()
                 return self._end("done", message.text())
             stop_blocks += 1
             self.bus.emit(ev.HookBlocked("Stop", outcome.reason))
@@ -630,6 +652,7 @@ class Session:
                     )
                 )
                 await self.run_checks()
+                await self._review_turn()
                 return self._end("stop_blocks_exhausted", message.text())
             self._add(Message("user", f"Stop hook feedback:\n{outcome.reason}", is_meta=True))
 
@@ -896,6 +919,120 @@ class Session:
         if report.restored or report.deleted:
             self.bus.emit(ev.FilesTouched(list(self.touched)))
         return report
+
+    def review_spec(self) -> tuple[ModelSpec, str]:
+        """The Review Desk's model: ``review_model`` as a registry id or an ``agent_models`` key."""
+        wanted = (self.settings.review_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"the reviewer model {wanted!r} is not configured; "
+            f"this session's model ({self.model.id}) reviews instead",
+        )
+
+    async def _review_turn(self) -> None:
+        """The automatic Review Desk pass: after a turn that wrote files, when the setting is on.
+
+        A review is advice about work the turn already finished, so nothing it does may break
+        that turn: a cancel or a crash becomes a notice and the turn ends normally.
+        """
+        if not self.written or not self.settings.review_after_turn:
+            return
+        try:
+            await self.run_review()
+        except asyncio.CancelledError:
+            _uncancel()
+            self.bus.emit(
+                ev.Notice("info", "review cancelled: the files changed but were not reviewed")
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken review is reported, never swallowed
+            self.bus.emit(ev.Notice("error", f"review not run ({type(exc).__name__}: {exc})"[:300]))
+
+    async def run_review(self, files: list[Path] | None = None) -> Review:
+        """The Review Desk: a second reader over this turn's diff. It advises; it never edits."""
+        paths = list(files) if files is not None else await self.changed_files()
+        paths = [path for path in paths if path.exists()]
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        spec, note = self.review_spec()
+        if note:
+            self.bus.emit(ev.Notice("warn", note))
+
+        def skip(reason: str) -> Review:
+            review = Review(str(root), spec.id, "skipped", reason)
+            self.review = review
+            self.bus.emit(ev.ReviewFinished(str(root), review.as_dict()))
+            return review
+
+        if not paths:
+            return skip("no changed file to review")
+        if isinstance(self.approver, ev.DenyAll) and is_subscription_endpoint(spec.base_url):
+            return skip(
+                f"a headless run may not call {spec.id}: it sits on a subscription plan endpoint. "
+                "Set review_model to a pay-as-you-go or local id, or review from an interactive session"
+            )
+        held = lock_held(self.settings.review_lock_dir)
+        if held:
+            return skip(held)
+        before = self.undo_log.turns[-1].before if self.undo_log.turns else {}
+        changes = await asyncio.to_thread(collect_changes, root, paths, before)
+        for change in changes:
+            change.diff = self._clean(change.diff)
+        changes = [change for change in changes if not change.diff.startswith("[redaction failed")]
+        if not changes:
+            return skip(
+                "no diff to read: the changed files show no difference, or redaction withheld them"
+            )
+        self.bus.emit(ev.ReviewStarted([change.path for change in changes], spec.id))
+
+        async def caller(system: str, user: str) -> str:
+            return await call_model(self.provider, spec, system, user)
+
+        review = await review_changes(
+            root,
+            self.undo_log.turns[-1].prompt if self.undo_log.turns else "",
+            changes,
+            caller,
+            spec.id,
+            extra=SECURITY_EXTRA if any(change.sensitive for change in changes) else "",
+            left_out=skipped_names(root, paths),
+        )
+        self.review = review
+        self.bus.emit(ev.ReviewFinished(str(root), review.as_dict()))
+        return review
+
+    def review_comment(self, number: int) -> Comment:
+        """One comment from the last review, counted from 1 the way the desk lists them."""
+        comments = self.review.comments if self.review else []
+        if not comments:
+            raise ValueError("the last review left no comment; run /review first")
+        if not 1 <= number <= len(comments):
+            raise ValueError(f"no comment {number}: the last review has {len(comments)}")
+        return comments[number - 1]
+
+    def comment_prompt(self, number: int, note: str = "") -> str:
+        """The user text one reviewer comment becomes. The front-end sends it as the next turn.
+
+        Nothing is queued here: a comment is advice until the person decides to send it, and
+        this is that decision.
+        """
+        comment = self.review_comment(number)
+        self.bus.emit(ev.ReviewComment(comment.file, comment.line, comment.text))
+        return comment_text(comment, note)
+
+    def remember(self, number: int) -> Path:
+        """Keep one comment in ``.mwm/review-learnings.md``, so every later review is told it."""
+        comment = self.review_comment(number)
+        root = repo_root(self.cwd)
+        path = remember_comment(root, comment)
+        kept_out = exclude_from_git(root)
+        if kept_out:
+            self.bus.emit(ev.Notice("warn", kept_out))
+        self.bus.emit(ev.ReviewComment(comment.file, comment.line, comment.text, remember=True))
+        return path
 
     async def changed_files(self) -> list[Path]:
         """What the last editing turn wrote, else what git reports changed or new."""

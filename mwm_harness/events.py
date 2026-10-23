@@ -167,6 +167,36 @@ class TraceFinished(Event):
 
 
 @dataclass
+class ReviewStarted(Event):
+    """The Review Desk's second reader is reading this turn's diff (``review.py``)."""
+
+    files: list[str]
+    model: str
+
+
+@dataclass
+class ReviewFinished(Event):
+    """One review: the change stack, a walkthrough line per file and the reviewer's comments.
+
+    ``review["status"]`` is ``reviewed``, ``skipped`` (with the reason) or ``failed``; a skip
+    is never presented as a review. Comments are advice: nothing here was applied to a file.
+    """
+
+    root: str
+    review: dict[str, Any]
+
+
+@dataclass
+class ReviewComment(Event):
+    """A reviewer comment the person acted on: sent on as their next turn, or kept for later."""
+
+    file: str
+    line: int
+    text: str
+    remember: bool = False
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 
