@@ -211,6 +211,24 @@ def test_the_mic_clip_is_transcribed_and_bad_clips_are_refused(make_session):
         assert "no audio" in until(ws, "Transcript")[-1]["error"]
 
 
+def test_stale_sources_are_named_and_the_strip_carries_the_loaded_settings(make_session):
+    session, _, _ = make_session([])
+    app = create_app(session, {session.model.id: session.model}, TOKEN, PORT)
+    panel = app.state.panel
+    assert panel.staleness() == []  # nothing changed since this panel started
+    panel.started_at = 0  # pretend the process started before the package existed
+    assert "mwm_harness/web/server.py" in panel.staleness()
+    with (
+        TestClient(app, base_url=BASE) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        state = until(ws, "State")[-1]
+    assert state["commit"] == panel.commit
+    assert state["sandbox_mode"] == session.settings.sandbox
+    assert state["shell_network"] == session.settings.shell_network
+    assert "mwm_harness/web/server.py" in state["stale"]
+
+
 def test_check_results_reach_the_page_and_stay_in_the_tab_state(make_session):
     turns = [
         chunks_for(tool_calls=[("Write", {"file_path": "bad.py", "content": "def f(:\n"})]),

@@ -1,0 +1,33 @@
+# Internal names that must never reach the public harness repo.
+# One regex per line (grep -E syntax). Blank lines and lines starting with # are skipped.
+# This file is TRACKED so the list stays reviewable.
+#
+# Deliberately NOT listed (public by design in this repo):
+#   - Broker name: Topstep, TopstepX (web/market.py, permissions.py, the live panel)
+#   - Trading symbols: MNQ, MGC, NQ, GC, ES, NQ=F, MNQ=F
+#   - The name "Mats" alone (README says who built it)
+#   - VPS addresses (documented in README.md on purpose)
+
+# Account tier and identifiers
+50K Express
+EXPRESS-DLL
+26347971
+25428080
+PRAC 254
+
+# Systemd timer/service unit names (internal scheduling)
+mwm-[a-z-]+\.timer
+mwm-[a-z-]+\.service
+
+# Internal hostnames and ntfy topics
+brief\.mwmai\.no
+ntfy\.(sh|mwmai)
+mwmai\.no/[a-z]
+
+# Absolute home paths (the workspace rule allows only $HOME in public files)
+/home/mm
+
+# Full name and personal identifiers
+Mats Mj
+matswm86@
+mrmaxwilliam@

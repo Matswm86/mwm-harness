@@ -118,6 +118,9 @@ dialog.newtab button.go{background:var(--cyan);border-color:var(--cyan);color:#0
 .meter span i.over{background:var(--alert)}
 .grow{flex:1}
 #conn{color:var(--ok)} #conn.down{color:var(--alert)}
+.stalebanner{flex-basis:100%;display:none;padding:5px 12px;font:600 11px/1.4 var(--mono);color:#05070d;background:var(--gold);letter-spacing:.02em;border-radius:4px;margin-top:4px}
+.stalebanner[hidden]{display:none}
+.stalebanner.show{display:block}
 
 /* ---------- left rail ---------- */
 .rail{grid-area:rail;overflow:auto;padding:4px 0;scrollbar-width:thin;scrollbar-color:var(--faint) transparent}
@@ -374,6 +377,8 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <span class="chip" title="Model requests this session">requests <b id="reqs">0</b></span>
     <span class="chip nowchip" id="nowrun" hidden aria-live="polite"></span>
     <span class="chip" id="sandbox" title="Shell sandbox">shell sandbox <b>?</b></span>
+    <span class="chip" id="netpolicy" title="Bash calls with network: true">network <b>?</b></span>
+    <span class="chip" id="commit" title="Harness commit this panel loaded">commit <b>?</b></span>
     <span class="chip hwchip" id="hwcpu" title="CPU load and package temperature of this machine">CPU <b>--</b></span>
     <span class="chip hwchip" id="hwgpu" title="GPU load and temperature of this machine">GPU <b>--</b></span>
     <span class="grow"></span>
@@ -383,8 +388,8 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <span class="chip" title="Topstep flattens every position at 16:10 ET">flatten in <b id="flat">--</b></span>
     <button class="stopall" id="stopall" type="button" title="Emergency stop: cancel every tab's turn, kill their shell commands, refuse open approvals (Alt+Shift+X, /stop all)">STOP ALL</button>
     <span id="conn">connecting</span>
+    <div class="stalebanner" id="stalebanner" hidden role="alert"></div>
   </header>
-
   <div class="pane mods" id="mods" role="toolbar" aria-label="Mods: F1 to F9"><b>MODS</b><span class="modnote" id="modnote"></span></div>
 
   <nav class="pane rail" aria-label="Session lists">
@@ -1303,7 +1308,12 @@ function loadState(s) {
   $("mode").value = s.mode;
   $("effort").value = ["low", "medium", "high", "xhigh"].includes(s.effort) ? s.effort : "default";
   const sb = $("sandbox"); sb.className = "chip " + (s.sandbox ? "ok" : "bad"); sb.replaceChildren("shell sandbox ", el("b", null, s.sandbox ? "on" : "OFF"));
-  $("sessinfo").textContent = `${s.cwd}\nsession ${s.session_id}\nshell sandbox ${s.sandbox ? "on" : "OFF"}`;
+  const np = $("netpolicy"); const npv = s.shell_network || "?"; np.className = "chip " + (npv === "allow" ? "ok" : npv === "deny" ? "bad" : "ask"); np.replaceChildren("network ", el("b", null, npv));
+  const cm = $("commit"); cm.replaceChildren("commit ", el("b", null, s.commit || "?"));
+  const banner = $("stalebanner");
+  if (s.stale && s.stale.length) { banner.hidden = false; banner.classList.add("show"); banner.textContent = `source changed since this panel started (${s.stale.slice(0, 4).join(", ")}${s.stale.length > 4 ? ` +${s.stale.length - 4}` : ""}), restart to pick it up`; }
+  else { banner.hidden = true; banner.classList.remove("show"); }
+  $("sessinfo").textContent = `${s.cwd}\nsession ${s.session_id}\nshell sandbox ${s.sandbox ? "on" : "OFF"}\ncommit ${s.commit || "?"}\nnetwork ${npv}`;
   $("sid").textContent = s.session_id.slice(0, 8); $("cwdname").textContent = baseName(s.cwd);
   turnCount = s.history.filter((m) => m.role === "user" && m.blocks.some((b) => b.type === "text")).length;
   bumpTurns(0);  // a replayed TurnStarted below counts the running turn

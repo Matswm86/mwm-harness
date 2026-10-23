@@ -47,6 +47,7 @@ from mwm_harness.web.market import MarketFeed
 from mwm_harness.web.vendor import design_dir, design_ready, monaco_dir, monaco_ready
 
 STATIC = Path(__file__).parent / "static"
+PACKAGE_DIR = Path(__file__).resolve().parent.parent
 POLICY_VIOLATION = 1008
 MAX_AUDIO_B64 = 8 * 1024 * 1024 * 4 // 3  # an 8 MB clip, base64-encoded
 CDN = "https://cdn.jsdelivr.net"  # code viewer, 3D library and fonts load from here; see index.html
@@ -65,6 +66,26 @@ LIVE_EVENTS = (
 MAX_LIVE_EVENTS = 2000
 SIDE_COMMANDS = ("/check", "/runit", "/trace")  # slash commands that run as background tasks
 CLOSED_TABS_KEPT = 10
+
+
+def _git_commit() -> str:
+    """Short hash of the running harness code, or 'unknown' outside a git checkout."""
+    try:
+        out = subprocess.run(  # noqa: S603
+            ["git", "-C", str(PACKAGE_DIR), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return out.stdout.strip() if out.returncode == 0 else "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def _package_sources() -> list[Path]:
+    """Every .py file in the package, for the staleness check."""
+    return sorted(PACKAGE_DIR.rglob("*.py"))
 
 
 def mcp_servers(manager: McpManager | None) -> list[dict[str, Any]]:
@@ -244,6 +265,7 @@ class Tab:
 
     def state(self) -> dict[str, Any]:
         session = self.session
+        settings = session.settings
         return {
             "type": "State",
             "tab": self.id,
@@ -255,6 +277,10 @@ class Tab:
             "cwd": str(session.cwd),
             "session_id": session.transcript.session_id,
             "sandbox": session.tool_ctx.sandbox.enabled,
+            "sandbox_mode": settings.sandbox,
+            "shell_network": settings.shell_network,
+            "commit": self.panel.commit,
+            "stale": self.panel.staleness(),
             "busy": self.busy,
             "todos": list(session.tool_ctx.todos),
             "plan": session.plan,
@@ -637,6 +663,9 @@ class Panel:
         self.max_tabs = max_tabs
         self.mcp = session.mcp
         self.market = MarketFeed(session.settings.chart_env_file)
+        self.started_at = time.time()
+        self.commit = _git_commit()
+        self._source_files = _package_sources()
         settings = session.settings
         self.voice = Transcriber(
             settings.voice_model, settings.voice_device, settings.voice_language
@@ -677,6 +706,23 @@ class Panel:
         if self._mods is None or self._mods[0] != stamp:
             self._mods = (stamp, load_mods(path))
         return self._mods[1]
+
+    def staleness(self) -> list[str]:
+        """Source files newer than this process started: the panel is serving old code."""
+        changed = []
+        for path in self._source_files:
+            try:
+                if path.stat().st_mtime > self.started_at:
+                    changed.append(path.relative_to(PACKAGE_DIR.parent).as_posix())
+            except OSError:
+                pass
+        settings_path = config_dir() / "settings.toml"
+        try:
+            if settings_path.is_file() and settings_path.stat().st_mtime > self.started_at:
+                changed.append(str(settings_path))
+        except OSError:
+            pass
+        return changed
 
     def model_lock(self, model: ModelSpec) -> asyncio.Lock | None:
         """One lock per model served from this machine; hosted models need none."""
