@@ -20,6 +20,7 @@ from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolv
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
 from mwm_harness.config import EFFORTS, ModelSpec, Settings, config_dir, workspace_root
 from mwm_harness.context import ContextMeter, build_system_prompt
+from mwm_harness.costwatch import TurnCostWatch, log_spike
 from mwm_harness.hooks import HookEngine, load_registrations
 from mwm_harness.mcp_client import HARNESS_SECRET_ENV, McpManager
 from mwm_harness.messages import (
@@ -179,6 +180,8 @@ class Session:
             for message in self.messages:
                 self.transcript.append(message)
         self.meter = ContextMeter(model.context_window, model.soft_budget)
+        self.cost_watch = TurnCostWatch()
+        self._turn_completion_start = 0
         HARNESS_SECRET_ENV.update(spec.key_env for spec in self.models.values())
         scratch = self.transcript.path.with_suffix("") / "scratch"
         self.permissions = Permissions(
@@ -509,6 +512,7 @@ class Session:
 
     async def _turn(self, prompt: str) -> ev.TurnEnded:
         self.bus.emit(ev.TurnStarted(prompt))
+        self._turn_completion_start = self.meter.total_completion
         self.undo_log.start(prompt)
         outcome = await self.hooks.run("UserPromptSubmit", prompt=prompt)
         self._report(outcome, "UserPromptSubmit")
@@ -940,9 +944,27 @@ class Session:
 
     def _end(self, reason: str, text: str = "") -> ev.TurnEnded:
         self.undo_log.end()
+        self._watch_turn_cost()
         ended = ev.TurnEnded(reason, text)
         self.bus.emit(ended)
         return ended
+
+    def _watch_turn_cost(self) -> None:
+        """Flag a turn that billed >3x the session's median completion tokens."""
+        turn_tokens = self.meter.total_completion - self._turn_completion_start
+        spike = self.cost_watch.record(max(turn_tokens, 0))
+        if spike is None:
+            return
+        ratio = spike["ratio"]
+        self.bus.emit(
+            ev.Notice(
+                "warn",
+                f"cost spike: this turn used {turn_tokens:,} completion tokens, "
+                f"{ratio}x the session median of {int(spike['median_tokens']):,}; "
+                "check for a looping tool call or re-reads before continuing",
+            )
+        )
+        log_spike(self.transcript.session_id, self.model.id, spike)
 
     def _emit_usage(self) -> None:
         meter = self.meter
