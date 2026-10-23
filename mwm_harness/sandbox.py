@@ -116,7 +116,9 @@ class Sandbox:
         # that calls mktemp (the detect-secrets pre-commit hook, backup.sh's lock file).
         # Each sandbox gets its own empty writable tmpfs instead: mktemp works, and host
         # /tmp contents stay invisible, same isolation as the PRIVATE_DIRS tmpfs mounts.
-        argv += ["--tmpfs", "/tmp"]
+        # --perms applies to this tmpfs only. Without it bwrap makes /tmp 0755, and a
+        # tool that checks for the sticky bit before trusting TMPDIR refuses to use it.
+        argv += ["--perms", "1777", "--tmpfs", "/tmp"]
         argv += gpu_device_binds()
         if not network:
             argv.append("--unshare-net")

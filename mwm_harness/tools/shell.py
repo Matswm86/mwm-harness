@@ -17,7 +17,9 @@ class Bash(Tool):
         "timeout is in milliseconds (default 120000, max 600000). Use Grep and Glob "
         "for searching instead of shell grep and find. Commands run without network "
         "access (no internet, no local servers); set network: true for a command that "
-        "needs it (pip install, git push, curl), and the person is asked first."
+        "needs it (pip install, git push, curl). Whether that asks first depends on "
+        "the permission mode and the shell_network setting, so just set the flag when "
+        "the command needs the network and let the harness decide."
     )
     input_schema = {
         "type": "object",

@@ -825,7 +825,12 @@ class Session:
                     '"deny" in settings.toml); do this without the network',
                     True,
                 )
-            if policy == "ask":
+            if policy == "ask" and self.permissions.mode != "bypassPermissions":
+                # "ask" means ask a person. bypassPermissions is the mode where the
+                # person said up front "run it all, I am not watching", so it cannot
+                # also be the mode that stops. A headless job's approver is DenyAll,
+                # where this ask was an instant refusal that killed every git push.
+                # shell_network = "deny" above still refuses, and so does the deny list.
                 decision.verdict, decision.reason = "ask", "this command asks for network access"
         if decision.verdict == "ask":
             doomed = tool.refusal(tool_input, self.tool_ctx)

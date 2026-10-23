@@ -21,6 +21,15 @@ def test_argv_mounts_a_tmpfs_over_tmp():
 
 
 @needs_bwrap
+def test_tmp_has_the_sticky_bit(tmp_path):
+    """bwrap makes a bare --tmpfs 0755. A real /tmp is 1777, and a tool that checks for
+    the sticky bit before trusting TMPDIR refuses to write into one that lacks it."""
+    result = asyncio.run(Sandbox("bwrap", [tmp_path]).run("stat -c %a /tmp", tmp_path, 30))
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "1777"
+
+
+@needs_bwrap
 def test_mktemp_writes_inside_the_sandbox(tmp_path):
     """The 2026-10-23 regression: read-only /tmp made detect-secrets' mktemp fail,
     so wmcommit could not commit from an agent session."""

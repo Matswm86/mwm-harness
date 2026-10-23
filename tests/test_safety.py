@@ -148,8 +148,18 @@ def test_bash_timeout_returns_partial_output(tmp_path: Path) -> None:
 @pytest.mark.skipif(not bwrap_works(), reason="bubblewrap cannot run here")
 def test_sandbox_blocks_writes_outside_the_project(tmp_path: Path) -> None:
     ctx = context(tmp_path, sandbox="bwrap")
-    outside = tmp_path / "outside.txt"
-    result = call("Bash", {"command": f"echo x > {outside}; echo y > inside.txt"}, ctx)
+    # The read-only probe has to sit outside /tmp. Since 2026-10-23 the sandbox mounts
+    # its own writable tmpfs over /tmp so mktemp-based tools work, which means pytest's
+    # tmp_path is no longer a read-only host path: a write there succeeds inside the
+    # sandbox and lands in that private tmpfs. /etc reaches the host through the
+    # read-only root bind, so it reports the boundary whatever the basetemp is.
+    result = call(
+        "Bash", {"command": "echo blocked > /etc/mwm-sandbox-probe; echo y > inside.txt"}, ctx
+    )
     assert "Read-only file system" in result.content
+    assert not Path("/etc/mwm-sandbox-probe").exists()
+    # A write to a host path under /tmp must still leave nothing behind on the host.
+    outside = tmp_path / "outside.txt"
+    call("Bash", {"command": f"echo x > {outside}"}, ctx)
     assert not outside.exists()
     assert (ctx.cwd / "inside.txt").read_text() == "y\n"

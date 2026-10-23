@@ -99,9 +99,16 @@ stdio server plays MCP, a mocked transport plays the web.
 - `sandbox.py`: shell commands run inside bubblewrap when it is available: the
   filesystem is read-only outside the project and the session scratch folder,
   and an empty folder is mounted over `~/.ssh`, `~/.gnupg`, `~/.aws` and the
-  harness's own config. Each command also gets an empty network namespace (no
-  internet, no host services) unless the call sets `network: true`, which asks
-  the person in every mode (`shell_network` = ask, allow or deny). A command's
+  harness's own config. `/tmp` gets its own writable tmpfs (mode 1777, empty at
+  start), because a read-only `/tmp` breaks every tool that calls `mktemp`,
+  the `detect-secrets` pre-commit hook included; host `/tmp` contents stay
+  invisible. Each command also gets an empty network namespace (no
+  internet, no host services) unless the call sets `network: true`. What that
+  flag costs depends on `shell_network`: `ask` asks the person, except in
+  `bypassPermissions`, which is by definition the mode where nobody is watching
+  (a headless run's approver refuses everything, so an ask there was a silent
+  failure, not a pause); `allow` falls through to the normal permission
+  decision; `deny` refuses in every mode. A command's
   environment carries no variable whose name looks like a secret
   (`bash_env_keep` exempts one); MCP servers keep their own keys and lose the
   model keys. When bubblewrap is missing the session says so at start instead
@@ -321,7 +328,8 @@ with long options, a silent no-sandbox fallback). All five are fixed and each
 is a test in `tests/test_security_review.py`. Since 2026-10-10 `WebFetch`
 resolves a host once and connects to the address it checked (no DNS-rebinding
 window), and shell commands run without network unless the call sets
-`network: true`, which always asks first (`shell_network` in settings). Still
+`network: true`, which asks first unless the session runs in
+`bypassPermissions` (`shell_network` in settings). Still
 open: about half the code (`cli.py`, the terminal front-end, `skills.py`, the MCP
 protocol handling) has had no review yet.
 
@@ -330,6 +338,7 @@ protocol handling) has had no review yet.
 ```bash
 .venv/bin/mwm                     # interactive, in the current directory
 .venv/bin/mwm --mode acceptEdits  # file edits inside the project run without asking
+.venv/bin/mwm -p "task" --yolo    # one unattended turn: no prompt of any kind
 .venv/bin/mwm --resume last       # continue the newest session of this directory
 .venv/bin/mwm --web               # browser panel on 127.0.0.1:8765 (needs the web extra)
 .venv/bin/mwm --open              # the same, shown in its own browser window
@@ -337,6 +346,14 @@ protocol handling) has had no review yet.
 .venv/bin/mwm -p "summarise README.md"
 .venv/bin/mwm-jev report          # the judge's decision log and hit rate
 ```
+
+`--yolo` is the one switch for a run nobody is watching: it sets
+`bypassPermissions` and turns an `ask` network policy into `allow`, so a
+command that needs the internet runs instead of stopping the job. An explicit
+`shell_network = "deny"` stays a denial, and the hard deny list in
+`permissions.py` applies in every mode, `--yolo` included. The same two things
+can be set once for every session in `settings.toml` (`permission_mode`,
+`shell_network`), and the panel's mode dropdown reaches the same modes.
 
 Exit codes of `mwm`: 2 = no API key, 3 = any other configuration mistake
 (unknown model, unknown agent).

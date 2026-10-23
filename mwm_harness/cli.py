@@ -2,6 +2,7 @@
 
 mwm                        interactive session in the current directory
 mwm -p "question"          one headless turn; prints the answer, exit 0 on success
+mwm -p "task" --yolo       one headless turn that never stops to ask for permission
 mwm --resume last          continue the newest session of this directory
 mwm -p "task" --agent NAME run one subagent headless and print its report (for scripts and hooks)
 mwm --web                  the same session in a local browser window (127.0.0.1 only)
@@ -36,6 +37,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-p", "--print", dest="prompt", help="run one headless turn and exit")
     parser.add_argument("--model", help="model id from models.toml")
     parser.add_argument("--mode", choices=MODES, help="permission mode")
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        help="run one prompt to completion with no prompts of any kind: bypassPermissions "
+        "plus network allowed for Bash. The hard deny list still applies. Overrides --mode",
+    )
     parser.add_argument("--resume", metavar="ID", help="session id prefix, or 'last'")
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="project directory")
     parser.add_argument("--no-hooks", action="store_true", help="run without any hooks")
@@ -70,6 +77,12 @@ async def run(args: argparse.Namespace) -> int:
     settings = load_settings()
     if args.mode:
         settings.permission_mode = args.mode
+    if args.yolo:
+        settings.permission_mode = "bypassPermissions"
+        if settings.shell_network == "ask":
+            # "ask" with no approver is DenyAll, so the run would stop dead at the first
+            # git push. An explicit shell_network = "deny" is a decision, and stays one.
+            settings.shell_network = "allow"
     settings.mcp_allow = [*settings.mcp_allow, *args.allow]
     if args.prompt == "-":
         args.prompt = sys.stdin.read().strip()  # a hook pipes its prompt in
