@@ -112,6 +112,11 @@ class Sandbox:
         if not self.enabled:
             return ["bash", "-c", command]
         argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        # The host /tmp arrives read-only through the root bind, which breaks every tool
+        # that calls mktemp (the detect-secrets pre-commit hook, backup.sh's lock file).
+        # Each sandbox gets its own empty writable tmpfs instead: mktemp works, and host
+        # /tmp contents stay invisible, same isolation as the PRIVATE_DIRS tmpfs mounts.
+        argv += ["--tmpfs", "/tmp"]
         argv += gpu_device_binds()
         if not network:
             argv.append("--unshare-net")

@@ -165,7 +165,9 @@ def test_private_folders_are_hidden_inside_the_sandbox(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".ssh").mkdir()
     argv = Sandbox("auto", [tmp_path / "proj"]).argv("true")
-    assert argv[argv.index("--tmpfs") + 1] == str(tmp_path / ".ssh")
+    hidden = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--tmpfs"]
+    assert str(tmp_path / ".ssh") in hidden
+    assert "/tmp" in hidden  # writable scratch for mktemp-based tools, host /tmp hidden
 
 
 def test_a_private_folder_named_readable_is_not_blanked(monkeypatch, tmp_path):
