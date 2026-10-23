@@ -340,6 +340,8 @@ def review_lines(review: dict[str, Any]) -> list[str]:
             rows.append(f"    {change['walkthrough']}")
         if change["callers"]:
             rows.append(f"    called by: {', '.join(change['callers'][:6])}")
+        if change["unresolved"]:
+            rows.append(f"    resolved only at run time: {', '.join(change['unresolved'][:6])}")
     for number, comment in enumerate(review["comments"], 1):
         where = f"{comment['file']}:{comment['line']}"
         rows.append(f"  {number}. {where} [{comment['severity']}] {comment['text']}")

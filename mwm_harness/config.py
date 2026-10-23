@@ -187,6 +187,10 @@ class Settings:
     # Models with a context window below this get MCP tool names only, plus ToolSearch to
     # load a definition when needed. 0 sends every definition to every model.
     defer_mcp_tools_below: int = 65_536
+    # A model whose window is under this also gets a one-line-per-function map of the repo in
+    # its system prompt, so it can name the file worth reading instead of reading whole files.
+    # The map is cut at codemap.MAX_TEXT_CHARS. 0 sends no map to any model.
+    code_map_below: int = 65_536
     max_tabs: int = 6  # sessions the browser panel holds open at once
     worktree_dir: str = "~/.local/share/mwm-harness/worktrees"  # where isolated panel tabs live
     chart_env_file: str = ""  # .env with PROJECT_X_USERNAME/PROJECT_X_API_KEY for the panel chart

@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mwm_harness import codemap
 from mwm_harness.messages import Message
 from mwm_harness.streaming import StreamAssembler
 
@@ -240,6 +241,35 @@ def skipped_names(root: Path, files: list[Path]) -> list[str]:
         except ValueError:
             out.append(str(path))
     return out
+
+
+# ------------------------------------------------------------- caller map
+
+
+def attach_radius(
+    root: Path, changes: list[FileChange], warn: Callable[[str], None] | None = None
+) -> None:
+    """Fill in who calls the Python functions each changed file touched (``codemap``).
+
+    The map is advice about the diff, so failing to build it never stops the review: a changed
+    file that will not parse keeps no caller list, and a tree the indexer chokes on becomes one
+    warning line through ``warn`` instead of an exception.
+    """
+    wanted = [change for change in changes if change.path.endswith(".py")]
+    if not wanted:
+        return
+    try:
+        code = codemap.index(root)
+    except Exception as exc:  # noqa: BLE001 - a map that will not build is a notice, not a failure
+        if warn:
+            warn(f"no caller map this review: {type(exc).__name__}: {exc}"[:200])
+        return
+    for change in wanted:
+        if change.path in code.errors:
+            continue
+        change.callers, change.unresolved = code.radius(
+            change.path, _added_line_numbers(change.diff)
+        )
 
 
 # --------------------------------------------------------------- learnings

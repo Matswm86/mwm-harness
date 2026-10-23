@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from mwm_harness import codemap
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
@@ -45,6 +46,7 @@ from mwm_harness.review import (
     SECURITY_EXTRA,
     Comment,
     Review,
+    attach_radius,
     call_model,
     collect_changes,
     comment_text,
@@ -253,6 +255,7 @@ class Session:
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
+        self._code_map: str | None = None  # this turn's map, for a model with a small window
         self.loaded_tools: set[str] = set()
         self.tool_search = ToolSearch(self._deferred_tools, self.loaded_tools)
         self._turn_task: asyncio.Task[ev.TurnEnded] | None = None
@@ -265,8 +268,44 @@ class Session:
             parts = [build_system_prompt(self.cwd, workspace_root(), self.model)]
             parts.append(skills_prompt(self.skills) if "Skill" in self.tools else "")
             parts.append(self._mcp_instructions())
+            parts.append(self._code_map_prompt())
             self._system_prompt = "\n\n".join(part for part in parts if part)
         return self._system_prompt
+
+    def _code_map_prompt(self) -> str:
+        """A one-line-per-function map of the repo, for a model whose window cannot hold files.
+
+        The map itself is built off the event loop by :meth:`_load_code_map`; ``codemap`` stops
+        at ``MAX_FILES`` files and cuts its text at ``MAX_TEXT_CHARS``, so a small-window model
+        gets a few thousand tokens of orientation instead of reading whole files.
+        """
+        if not self._wants_code_map():
+            return ""
+        return f"# Code map\n\n{self._code_map}" if self._code_map else ""
+
+    def _wants_code_map(self) -> bool:
+        limit = self.settings.code_map_below
+        return limit > 0 and self.model.context_window < limit
+
+    async def _load_code_map(self) -> None:
+        """Build this turn's map in a worker: it walks every ``.py`` file under the repo root.
+
+        Rebuilt every turn rather than cached, because a map that still shows the line ranges
+        from before this session's edits would send a small-window model to the wrong place. The
+        prompt is only rebuilt when the map text actually moved, so prompt caching still holds.
+        """
+        if not self._wants_code_map():
+            return
+        try:
+            mapped = await asyncio.to_thread(codemap.text, repo_root(self.cwd))
+        except Exception as exc:  # noqa: BLE001 - no map means a shorter prompt, not a dead session
+            self.bus.emit(
+                ev.Notice("warn", f"no code map in the prompt: {type(exc).__name__}: {exc}"[:200])
+            )
+            return
+        if mapped != self._code_map:
+            self._code_map = mapped
+            self._system_prompt = None
 
     def _defers_mcp(self) -> bool:
         limit = self.settings.defer_mcp_tools_below
@@ -533,6 +572,7 @@ class Session:
 
     async def _turn(self, prompt: str) -> ev.TurnEnded:
         self.bus.emit(ev.TurnStarted(prompt))
+        await self._load_code_map()
         self._turn_completion_start = self.meter.total_completion
         self.undo_log.start(prompt)
         outcome = await self.hooks.run("UserPromptSubmit", prompt=prompt)
@@ -986,6 +1026,10 @@ class Session:
             return skip(
                 "no diff to read: the changed files show no difference, or redaction withheld them"
             )
+        warnings: list[str] = []
+        await asyncio.to_thread(attach_radius, root, changes, warnings.append)
+        for warning in warnings:
+            self.bus.emit(ev.Notice("warn", warning))
         self.bus.emit(ev.ReviewStarted([change.path for change in changes], spec.id))
 
         async def caller(system: str, user: str) -> str:

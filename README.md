@@ -151,7 +151,8 @@ stdio server plays MCP, a mocked transport plays the web.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
   /commands /plan /files /open /agents /jev /postmortem /undo /hw /check /runit
-  /trace /compact /init /resume /tab /clear /quit`, plus one per command file and per skill.
+  /trace /review /review-send /review-remember /compact /init /resume /tab
+  /clear /quit`, plus one per command file and per skill.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
   stream) prints dimmed as it arrives; `/think off` hides it. Every printed
   block carries its local time, and every event and message a UTC stamp.
@@ -290,6 +291,27 @@ stdio server plays MCP, a mocked transport plays the web.
   or miss; `/trace TEST` runs one test and lists the calls it made into the repo
   with their argument values. The panel shows the same in its Checks rail and
   the code pane (the "run it" button).
+- `review.py`, `codemap.py`: the Review Desk. After a turn that wrote files, a
+  second reader on another model (`review_model`, default the `critic` entry of
+  `models.toml`) reads that turn's diff and answers in strict JSON: one
+  plain-English line per changed file, plus comments with a severity, a line and
+  a fix. It advises: nothing it says is applied to a file, and a comment the
+  person acts on becomes their own next turn (`/review-send N`) or a standing
+  note in `.mwm/review-learnings.md` (`/review-remember N`), whose 60 newest
+  lines every later review of that repo is told. In a git repo that file goes
+  into `.git/info/exclude`, so a public repo never publishes it. A review is
+  skipped, and says so, when another reviewer holds the workspace lock, when the
+  diff is empty or withheld, or when a headless run would have to call a
+  subscription-plan endpoint; a skip is never shown as a review. The panel shows
+  all of it in the Review tab beside Code and Result. `codemap.py` answers "who
+  calls this": a static map of every function in the tree, built with the
+  standard library's `ast`, so each changed file also lists the repo functions
+  that call the ones its diff touched. A call whose target only exists at run
+  time (`getattr`, a dict entry, a local holding a callable, a method the class
+  does not define) is listed as unresolved rather than guessed. The same map, one
+  line per function, goes into the system prompt of a model whose window is under
+  `code_map_below` (65,536 by default), so a small local model can name the file
+  worth reading instead of reading whole files; it is cut at 24,000 characters.
 - `undo.py`: `/undo` (the panel's "undo turn" button) puts back the files the
   newest file-changing turn wrote with `Write` or `Edit`, from a copy taken
   before each write. It keeps the last 10 turns, leaves a file alone that
