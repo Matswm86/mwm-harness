@@ -139,6 +139,11 @@ def reminder(text: str) -> str:
     return f"<system-reminder>\n{text}\n</system-reminder>"
 
 
+# How many changed-on-disk files one reminder names. A mass checkout can move hundreds of files,
+# and a reminder longer than the request it protects is worse than no reminder.
+MAX_STALE_LISTED = 20
+
+
 # Tool names the fix-cycle brake treats as changing code and as looking at something.
 EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})  # file_path tools the check runner follows
@@ -515,6 +520,10 @@ class Session:
         ]
         child.permissions.session_allow = self.permissions.session_allow
         child.tool_ctx.read_files = self.tool_ctx.read_files
+        # The changed-on-disk stamps are copied, not shared: the child inherits what this session
+        # last saw, so it warns about a file that moved after the parent read it, but the child's
+        # own reads cannot make the parent's warning go away.
+        child.tool_ctx.stamps = dict(self.tool_ctx.stamps)
         child.transcript.note("subagent", f"{name} started by session {self.transcript.session_id}")
         self.bus.emit(ev.SubagentStarted(name, model.id, prompt))
         try:
@@ -696,6 +705,28 @@ class Session:
                 return self._end("stop_blocks_exhausted", message.text())
             self._add(Message("user", f"Stop hook feedback:\n{outcome.reason}", is_meta=True))
 
+    def _with_disk_note(self, messages: list[Message]) -> list[Message]:
+        """Add the changed-on-disk reminder to the tail of this request, and to nothing else.
+
+        The reminder goes into a copy of the message list: it is never appended to ``self.messages``
+        and never written to the transcript, so it cannot pollute the cached prefix, a later turn or
+        a ``/resume``. A session's own write re-stamps the file, so the writing session never reminds
+        itself; a file drops off the list once this session reads it again.
+        """
+        stale = self.tool_ctx.stale_files()
+        if not stale:
+            return messages
+        listed = "\n".join(f"- {path}" for path in stale[:MAX_STALE_LISTED])
+        if len(stale) > MAX_STALE_LISTED:
+            listed += f"\n- and {len(stale) - MAX_STALE_LISTED} more"
+        self.bus.emit(ev.Notice("info", f"{len(stale)} file(s) changed on disk since last read"))
+        note = reminder(
+            "these files changed on disk since you last read them:\n"
+            f"{listed}\n"
+            "Read them again before editing them; the text you have is out of date."
+        )
+        return [*messages, Message("user", note, is_meta=True)]
+
     async def _stream(self, assembler: StreamAssembler) -> None:
         specs = self._request_specs()
         messages = self.messages
@@ -707,6 +738,7 @@ class Session:
                 self.bus.emit(
                     ev.Notice("warn", f"observation archive failed, sent in full: {error}")
                 )
+        messages = self._with_disk_note(messages)
         stream = self.provider.stream(self.model, self.system_prompt, messages, specs, self.effort)
         async for chunk in stream:
             assembler.feed(chunk)

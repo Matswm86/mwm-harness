@@ -28,12 +28,44 @@ class ToolContext:
     sandbox: Sandbox
     output_cap: int = 30_000
     read_files: set[Path] = field(default_factory=set)
+    # The mtime each read or written file had when this session last saw it, so a file somebody
+    # else changed can be named before the model plans an edit on text that is no longer there.
+    stamps: dict[Path, int] = field(default_factory=dict)
     todos: list[dict[str, Any]] = field(default_factory=list)
     plan_handler: Callable[[str], Awaitable[bool]] | None = None  # set by the session
 
     def resolve(self, file_path: str) -> Path:
         path = Path(file_path).expanduser()
         return (path if path.is_absolute() else self.cwd / path).resolve()
+
+    def note_file(self, path: Path) -> None:
+        """Remember the state of a file this session just read or wrote."""
+        try:
+            self.stamps[path] = path.stat().st_mtime_ns
+        except OSError:
+            self.stamps.pop(path, None)
+
+    def stale_files(self) -> list[str]:
+        """Recorded files whose mtime moved, so the model is told before it edits stale text.
+
+        Only the recorded files are stat'ed, never a folder. A file that is gone is named as
+        deleted and then forgotten: there is nothing left to read again, and an edit of it fails
+        on its own.
+        """
+        changed: list[str] = []
+        gone: list[Path] = []
+        for path, stamp in self.stamps.items():
+            try:
+                now = path.stat().st_mtime_ns
+            except OSError:
+                changed.append(f"{path} (deleted)")
+                gone.append(path)
+                continue
+            if now != stamp:
+                changed.append(str(path))
+        for path in gone:
+            del self.stamps[path]
+        return changed
 
     def cap(self, text: str) -> str:
         """Trim long output for the model; the full text is kept in a scratch file."""

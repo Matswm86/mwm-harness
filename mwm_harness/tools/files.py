@@ -46,6 +46,9 @@ class Read(Tool):
             return ToolResult(f"{path} is a directory; use Glob or Bash ls", True)
         if path.suffix.lower() in IMAGE_SUFFIXES:
             return self._image(path)
+        # Stamped before the read, not after: a file that changes while it is being read then
+        # still looks stale to the next request, instead of passing as the text we returned.
+        ctx.note_file(path)
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
@@ -100,6 +103,7 @@ class Write(Tool):
         except OSError as exc:
             return ToolResult(f"could not write {path}: {exc}", True)
         ctx.read_files.add(path)
+        ctx.note_file(path)
         return ToolResult(f"wrote {len(tool_input['content'])} characters to {path}")
 
 
@@ -153,6 +157,7 @@ class Edit(Tool):
             path.write_text(text.replace(old, new), encoding="utf-8")
         except OSError as exc:
             return ToolResult(f"could not write {path}: {exc}", True)
+        ctx.note_file(path)
         return ToolResult(f"replaced {text.count(old)} occurrence(s) in {path}")
 
 

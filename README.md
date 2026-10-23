@@ -82,7 +82,16 @@ stdio server plays MCP, a mocked transport plays the web.
 - `providers.py`, `streaming.py`: streaming client for any OpenAI-compatible
   `/chat/completions` endpoint; tool-call fragments are reassembled by index.
 - `loop.py`: the turn state machine. Cancel keeps the partial answer and kills
-  the running command's whole process group.
+  the running command's whole process group. Before each request it stat's the
+  files this session read or wrote, and any file whose mtime moved goes into one
+  reminder at the tail of that request ("these files changed on disk since you
+  last read them"). The reminder is request-only: it is never appended to the
+  history or written to the transcript, so it cannot disturb the cached prefix or
+  a `/resume`, and a session's own write re-stamps the file so the writer is never
+  reminded about itself. Each session keeps its own stamps, which is what makes
+  two panel tabs on one folder warn each other; a subagent inherits a copy of its
+  parent's stamps, so a child's read cannot silence the parent's warning. A file
+  that vanished is named once as `(deleted)`.
 - `tools/`: `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `TodoWrite`. Names and
   argument names match Claude Code's, so existing hook matchers keep working.
 - `permissions.py`: four modes (`default`, `acceptEdits`, `bypassPermissions`,
