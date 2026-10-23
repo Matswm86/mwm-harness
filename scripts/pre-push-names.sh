@@ -51,9 +51,10 @@ while read -r local_ref local_oid remote_ref remote_oid; do
 
     # Get the diff of added lines only, with file names
     # Format: file:line:content for each added line
+    # The pattern list is exempt: it names the secrets in order to block them.
     # Portable awk (mawk-safe): no 3-argument match(). Hunk header field 3 is
     # "+start" or "+start,count"; strip the "+" and split on ",".
-    diff_output=$(git diff --unified=0 "$range" -- . 2>/dev/null | \
+    diff_output=$(git diff --unified=0 "$range" -- . ':!scripts/internal-names.txt' 2>/dev/null | \
         awk '
         /^diff --git/ { file = substr($3, 3); next }
         /^@@/ {
