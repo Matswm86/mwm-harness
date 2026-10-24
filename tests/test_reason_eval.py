@@ -15,6 +15,7 @@ from mwm_harness.reason_eval import (
     EvalError,
     Result,
     answer_case,
+    case_files,
     command_caller,
     judge_grade,
     keyword_grade,
@@ -125,7 +126,7 @@ def test_the_critic_agent_ships_read_only_and_asks_for_its_own_model(tmp_path: P
     assert "VERDICT: PASS | REVISE | BLOCK" in critic.prompt
 
 
-def test_the_three_arms_send_what_they_promise():
+def test_the_four_arms_send_what_they_promise():
     writer, sent = scripted("bare reply")
     assert asyncio.run(answer_case(case(), "bare", writer, None)) == "bare reply"
     assert "Pre-delivery check" not in sent[0][0]
@@ -143,6 +144,44 @@ def test_the_three_arms_send_what_they_promise():
 
     with pytest.raises(EvalError, match="--critic"):
         asyncio.run(answer_case(case(), "critic", writer, None))
+
+    # diagnose: the item 31 note the live session injects, wrapped the same way it is there.
+    answer = json.dumps(
+        {
+            "root_cause": "the key file holds a hostname where the key belongs",
+            "suspected_files": ["config.py", "invented.py"],
+            "guidance": ["print the value length", "compare against the /models call"],
+        }
+    )
+    writer, sent = scripted("final with note")
+    critic, critic_sent = scripted(answer)
+    target = case(prompt="The env var in config.py reads a hostname, not a key. Fix it?")
+    asyncio.run(answer_case(target, "diagnose", writer, critic, "glm-5.3"))
+    assert "config.py" in critic_sent[0][1]  # the diagnoser read the failure text
+    note = sent[0][1]
+    assert note.startswith("<system-reminder>") and "Is it down?" not in note
+    assert "FAILURE DIAGNOSIS (eval, read by glm-5.3)" in note
+    assert "Root cause: the key file holds a hostname" in note
+    assert "Suspected files: config.py" in note and "invented.py" not in note
+    assert "1. print the value length" in note
+    assert note.rstrip().endswith(target.prompt)  # the request itself still lands
+
+
+def test_the_diagnose_arm_degrades_visibly_when_the_answer_is_unreadable():
+    writer, sent = scripted("reply anyway")
+    critic, _ = scripted("I think it is something in the config, maybe?")  # no JSON object
+    asyncio.run(answer_case(case(), "diagnose", writer, critic))
+    assert "<system-reminder>" not in sent[0][1]
+    assert "(diagnosis: " in sent[0][1], "the empty note must name itself, not vanish"
+
+
+def test_case_files_names_only_the_files_the_case_text_mentions():
+    assert case_files("edit config.py and main.py, then run config.py again") == [
+        "config.py",
+        "main.py",
+    ]
+    assert case_files("no files at all here") == []
+    assert len(case_files("\n".join(f"f{n}.py" for n in range(40)))) == 24
 
 
 def test_run_writes_one_line_per_answer_and_a_failed_request_is_a_recorded_miss(tmp_path: Path):

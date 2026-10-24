@@ -1,12 +1,15 @@
 """Reasoning eval: does a model catch the trap in a situation, and does scaffolding help?
 
 Each case in ``evals/cases.toml`` is an ordinary request with one trap in its
-facts. Three arms answer it:
+facts. Four arms answer it:
 
 - ``bare``       the model with a one-line system prompt
 - ``playbooks``  the same model with the four reasoning playbooks in its system prompt
 - ``critic``     the model drafts, a second model criticises with the critic prompt,
                  the first model writes the final reply
+- ``diagnose``   the item 31 diagnosis runs on the case text before the model answers:
+                 a second model reads the failure and its note lands in the request as
+                 the ``<system-reminder>`` meta message the session injects
 
 A reply passes when it names the trap. Two graders: ``keyword`` (regex groups from
 the case file, offline and repeatable, crude) and ``judge`` (a model reads the
@@ -28,6 +31,7 @@ import math
 import re
 import shlex
 import sys
+import tempfile
 import tomllib
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -37,6 +41,8 @@ from pathlib import Path
 
 from mwm_harness.agents import BUILTIN_AGENTS
 from mwm_harness.config import ConfigError, ModelSpec, load_models
+from mwm_harness.diagnose import run_diagnosis
+from mwm_harness.loop import reminder
 from mwm_harness.messages import Message
 from mwm_harness.providers import OpenAICompatProvider, Provider, ProviderError
 from mwm_harness.skills import PLAYBOOKS, split_frontmatter
@@ -44,7 +50,7 @@ from mwm_harness.streaming import StreamAssembler
 
 REPO_CASES = Path(__file__).resolve().parent.parent / "evals" / "cases.toml"
 AREAS = ("verify", "debug", "audit", "challenge")
-ARMS = ("bare", "playbooks", "critic")
+ARMS = ("bare", "playbooks", "critic", "diagnose")
 BASE_SYSTEM = (
     "You are an engineering assistant working with one person on their own systems. "
     "Reply to the request below as you would in the session."
@@ -53,6 +59,10 @@ COMMAND_TIMEOUT = 600.0
 # A small model can fall into a loop and write until its context is full (seen live:
 # 6,900 tokens and 20 minutes on one case). A reply to these cases needs a few hundred.
 MAX_TOKENS = 2000
+# The diagnoser is a reasoning model and its thinking is billed against the same budget as its
+# answer: at 2,000 it stopped mid-object on 4 of 9 live diagnoses. The JSON shape needs hundreds
+# of tokens at most, so the room goes on the thinking.
+CRITIC_MAX_TOKENS = 6000
 
 # (system, user) -> reply
 Caller = Callable[[str, str], Awaitable[str]]
@@ -240,7 +250,22 @@ def critic_text(path: Path = BUILTIN_AGENTS / "critic.md") -> str:
     return split_frontmatter(path.read_text(encoding="utf-8"))[1].strip()
 
 
-async def answer_case(case: Case, arm: str, writer: Caller, critic: Caller | None) -> str:
+# What the session hands `run_diagnosis` as `known_files`: the repo's own file list. A single-turn
+# eval has no repo, so the file names the case text mentions stand in for it. A diagnosis naming
+# anything else is dropped by `parse_reply`, exactly as it is in a live turn.
+FILE_MENTION = re.compile(
+    r"[\w][\w./-]*\.(?:py|js|ts|tsx|go|rs|sql|html|css|toml|ya?ml|json|md|sh)\b"
+)
+
+
+def case_files(prompt: str, limit: int = 24) -> list[str]:
+    """File names mentioned in the case text, deduped and capped."""
+    return sorted(set(FILE_MENTION.findall(prompt)))[:limit]
+
+
+async def answer_case(
+    case: Case, arm: str, writer: Caller, critic: Caller | None, diag_model: str = "critic"
+) -> str:
     if arm == "bare":
         return await writer(BASE_SYSTEM, case.prompt)
     if arm == "playbooks":
@@ -261,6 +286,32 @@ async def answer_case(case: Case, arm: str, writer: Caller, critic: Caller | Non
             "ignore what it got wrong."
         )
         return await writer(BASE_SYSTEM, final_prompt)
+    if arm == "diagnose":
+        if critic is None:
+            raise EvalError("the diagnose arm needs --critic: it runs the item 31 diagnosis")
+        with tempfile.TemporaryDirectory(prefix="mwm-eval-") as folder:
+            diagnosis = await run_diagnosis(
+                root=Path(folder),
+                source="eval",
+                failure_text=case.prompt,
+                task=case.prompt,
+                changes_text="",
+                known_files=case_files(case.prompt),
+                caller=critic,
+                model_id=diag_model,
+            )
+        note = diagnosis.note()
+        # The note is the treatment: keep it in the run log so a later read of the result file
+        # can see what the writer was actually handed, not only how it scored.
+        print(
+            f"  [{case.id}] diagnosis note:\n{note or '(empty: ' + diagnosis.reason + ')'}\n",
+            file=sys.stderr,
+            flush=True,
+        )
+        if not note:
+            # Nothing to say is an outcome, not a silent fallback: say which one it degraded to.
+            return await writer(BASE_SYSTEM, f"{case.prompt}\n\n(diagnosis: {diagnosis.reason})")
+        return await writer(BASE_SYSTEM, f"{reminder(note)}\n\n{case.prompt}")
     raise EvalError(f"unknown arm {arm}")
 
 
@@ -322,6 +373,7 @@ async def run(
     out: Path | None,
     concurrency: int = 1,
     done: list[Result] | None = None,
+    diag_model: str = "critic",
 ) -> list[Result]:
     """``done`` holds answers from an interrupted run; those (arm, case) pairs are not asked again."""
     gate = asyncio.Semaphore(max(1, concurrency))
@@ -331,7 +383,7 @@ async def run(
     async def one(case: Case, arm: str) -> None:
         async with gate:
             try:
-                answer = await answer_case(case, arm, writer, critic)
+                answer = await answer_case(case, arm, writer, critic, diag_model)
                 if judge is not None:
                     passed, note = await judge_grade(case, answer, judge)
                     grader = "judge"
@@ -358,7 +410,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mwm-eval", description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", help="models.toml id, or cmd:<command reading stdin>")
     parser.add_argument("--arms", default="bare,playbooks", help=f"comma list of {ARMS}")
-    parser.add_argument("--critic", help="model for the critic arm (another family)")
+    parser.add_argument(
+        "--critic",
+        help="second model for the critic and diagnose arms (another family than --model)",
+    )
     parser.add_argument("--judge", help="model that grades; without it the keyword grader runs")
     parser.add_argument("--cases", type=Path, default=REPO_CASES)
     parser.add_argument("--ids", help="comma list of case ids")
@@ -366,6 +421,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--out-dir", type=Path, default=Path("evals/out"))
     parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS, help="0 = no cap")
+    parser.add_argument(
+        "--critic-max-tokens",
+        type=int,
+        default=CRITIC_MAX_TOKENS,
+        help="room for the second model, whose thinking is billed against its own answer",
+    )
     parser.add_argument("--resume", type=Path, help="result file of an interrupted run")
     parser.add_argument("--compare", nargs="+", type=Path, help="print a table from result files")
     args = parser.parse_args(argv)
@@ -393,17 +454,34 @@ def main(argv: list[str] | None = None) -> int:
         provider = OpenAICompatProvider()
         cap = args.max_tokens
         writer = make_caller(args.model, models, provider, cap)
-        critic = make_caller(args.critic, models, provider, cap) if args.critic else None
+        critic = (
+            make_caller(args.critic, models, provider, args.critic_max_tokens)
+            if args.critic
+            else None
+        )
         judge = make_caller(args.judge, models, provider, cap) if args.judge else None
         if "critic" in arms and critic is None:
             raise EvalError("the critic arm needs --critic")
+        if "diagnose" in arms and critic is None:
+            raise EvalError("the diagnose arm needs --critic (the model that runs the diagnosis)")
         args.out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         label = re.sub(r"[^\w.-]+", "_", args.model)[:40]
         out = args.resume or args.out_dir / f"{stamp}-{label}.jsonl"
         done = [r for r in read_results([out]) if r.model == args.model] if args.resume else []
         results = asyncio.run(
-            run(cases, arms, args.model, writer, critic, judge, out, args.concurrency, done)
+            run(
+                cases,
+                arms,
+                args.model,
+                writer,
+                critic,
+                judge,
+                out,
+                args.concurrency,
+                done,
+                args.critic,
+            )
         )
     except (EvalError, ConfigError) as exc:
         print(f"mwm-eval: {exc}", file=sys.stderr)
