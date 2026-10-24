@@ -187,6 +187,95 @@ def test_the_critic_fills_the_reason_and_the_order_to_check(tmp_path: Path) -> N
     assert "guard the empty list" in diagnosis.note()
 
 
+# A reasoning model can spend its whole output budget thinking and stop in the middle of the
+# object (live: 4 of 9 eval diagnoses on glm-5.3 at 2,000 tokens). The half that arrived still
+# beats no diagnosis, so the cut is closed and the note says it was cut.
+
+
+def test_an_answer_cut_mid_root_cause_keeps_the_cause_and_marks_the_cut(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "utils.py").write_text("x = 1\n")
+    cut = (
+        '{"root_cause": "first() indexes the list before anything checks that an item '
+        "is there, so the empty case"
+    )
+
+    async def caller(system: str, user: str) -> str:
+        return cut
+
+    diagnosis = diagnose_all(root, utils_tb(root), caller)
+    assert diagnosis.status == "diagnosed" and diagnosis.critic
+    assert diagnosis.partial_answer is True
+    assert diagnosis.root_cause.startswith("first() indexes the list")
+    assert diagnosis.guidance == []
+    # The cut left no list behind, so the file still comes from the traceback.
+    assert diagnosis.suspected_files == ["utils.py"]
+    assert "ran out of room mid-answer" in diagnosis.note()
+
+
+def test_an_answer_cut_inside_a_list_drops_the_half_written_item(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "utils.py").write_text("x = 1\n")
+    cut = (
+        '{"root_cause": "the empty list is never checked", '
+        '"suspected_files": ["utils.py"], "guidance": ["open utils.py", "guard the li'
+    )
+
+    async def caller(system: str, user: str) -> str:
+        return cut
+
+    diagnosis = diagnose_all(root, utils_tb(root), caller)
+    assert diagnosis.partial_answer is True
+    # A step cut to "guard the li" is noise the next request would follow, so it goes.
+    assert diagnosis.guidance == ["open utils.py"]
+    assert diagnosis.suspected_files == ["utils.py"]
+    assert diagnosis.root_cause == "the empty list is never checked"
+
+
+def test_a_cut_that_landed_inside_a_key_still_yields_the_pairs_before_it(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "utils.py").write_text("x = 1\n")
+
+    async def caller(system: str, user: str) -> str:
+        return '{"root_cause": "nothing checks the list", "gui'
+
+    diagnosis = diagnose_all(root, utils_tb(root), caller)
+    assert diagnosis.partial_answer is True
+    assert diagnosis.root_cause == "nothing checks the list"
+
+
+def test_a_brace_with_nothing_in_it_is_still_no_answer(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "utils.py").write_text("x = 1\n")
+
+    async def caller(system: str, user: str) -> str:
+        return "{"
+
+    diagnosis = diagnose_all(root, utils_tb(root), caller)
+    assert diagnosis.critic is False and diagnosis.partial_answer is False
+    assert "no JSON object" in diagnosis.reason
+    assert "No critic model answered" in diagnosis.note()
+
+
+def test_a_whole_answer_is_not_marked_as_cut(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "utils.py").write_text("x = 1\n")
+
+    async def caller(system: str, user: str) -> str:
+        return json.dumps(
+            {"root_cause": "c", "suspected_files": ["utils.py"], "guidance": ["open it"]}
+        )
+
+    diagnosis = diagnose_all(root, utils_tb(root), caller)
+    assert diagnosis.partial_answer is False
+    assert "ran out of room" not in diagnosis.note()
+
+
 def test_a_file_the_critic_invented_never_reaches_the_note(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()

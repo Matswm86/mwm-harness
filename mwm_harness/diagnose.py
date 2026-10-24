@@ -141,6 +141,7 @@ class Diagnosis:
     frames: list[Frame] = field(default_factory=list)
     critic: bool = False  # the root cause and guidance came from a model
     extra_files: int = 0  # named by the model, not present in the evidence, so dropped
+    partial_answer: bool = False  # the model's answer was cut off; what landed is what is shown
     round: int = 0
     seconds: float = 0.0
 
@@ -168,6 +169,11 @@ class Diagnosis:
             lines.append(
                 f"No critic model answered{missed}, so this is only where the failure points, "
                 "not why."
+            )
+        elif self.partial_answer:
+            lines.append(
+                "The critic ran out of room mid-answer: what is above is what it got out, "
+                "so the last line may stop mid-sentence."
             )
         lines.append("This is advice: nothing was changed. Open the files before editing them.")
         return "\n".join(lines)
@@ -407,9 +413,9 @@ def _entries(value: Any, split_lines: bool = False) -> list[str]:
 
 def parse_reply(
     text: str, trace: Traceback, known_files: list[str]
-) -> tuple[str, list[str], list[str], int]:
-    """Root cause, suspected files (only ones the evidence holds), guidance, dropped count."""
-    data = _json_object(text)
+) -> tuple[str, list[str], list[str], int, bool]:
+    """Root cause, suspected files (only ones the evidence holds), dropped count, cut-off flag."""
+    data, partial = _json_object(text)
     if data is None:
         raise DiagnoseError("the diagnosis answer held no JSON object")
     evidence = set(known_files) | set(trace.suspected())
@@ -427,11 +433,18 @@ def parse_reply(
     guidance = [
         step.replace("\n", " ") for step in _entries(data.get("guidance"), split_lines=True)[:3]
     ]
-    return root_cause, suspected, guidance, dropped
+    return root_cause, suspected, guidance, dropped, partial
 
 
-def _json_object(text: str) -> dict[str, Any] | None:
-    """The first balanced JSON object in ``text``, or None. Braces inside strings are skipped."""
+def _json_object(text: str) -> tuple[dict[str, Any] | None, bool]:
+    """The first JSON object in ``text``, and whether it had to be closed by hand.
+
+    Braces inside strings are skipped. A reasoning model can spend its whole output budget
+    thinking and stop mid-object (seen live: 4 of 9 eval diagnoses opened `{"root_cause": "` and
+    never closed), so a cut-off reply is salvaged rather than thrown away: the root cause that
+    did arrive beats the fact that the last line never finished. ``partial`` then says on the
+    note that the answer was cut.
+    """
     start = text.find("{")
     while start != -1:
         depth, in_string, escape = 0, False, False
@@ -452,12 +465,77 @@ def _json_object(text: str) -> dict[str, Any] | None:
             elif char == "}":
                 depth -= 1
                 if depth == 0:
-                    try:
-                        data = json.loads(text[start : index + 1])
-                    except json.JSONDecodeError:
-                        break
-                    return data if isinstance(data, dict) else None
+                    data = _loads_dict(text[start : index + 1])
+                    if data is not None:
+                        return data, False
+                    break
         start = text.find("{", start + 1)
+    salvaged = _salvage(text)
+    return salvaged, salvaged is not None
+
+
+def _loads_dict(body: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+SALVAGE_KEYS = ("root_cause", "suspected_files", "guidance")
+
+
+def _open_state(body: str) -> tuple[bool, list[str]]:
+    """Is the text cut inside a string, and which containers are still open (outermost first)?"""
+    stack: list[str] = []
+    in_string = escape = False
+    for char in body:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]" and stack:
+            stack.pop()
+    return in_string, stack
+
+
+def _closed(body: str) -> str:
+    """The text with whatever the cut left open closed by hand: a string, then the containers."""
+    in_string, stack = _open_state(body)
+    return body + ('"' if in_string else "") + "".join(reversed(stack))
+
+
+def _salvage(text: str) -> dict[str, Any] | None:
+    """Parse the part of a cut-off answer that did arrive.
+
+    Preference order: drop a half-written list item (a step cut to "guard" is noise the model
+    would follow), then keep the text as it stands (a root cause cut mid-sentence is still the
+    root cause), then fall back to the pairs before the last comma, which is where the answer
+    stops when the cut landed inside a key name. None when nothing useful closed: that is the
+    old honest failure, unchanged.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    body = text[start:].rstrip().removesuffix(",")
+    in_string, stack = _open_state(body)
+    inside_list = in_string and bool(stack) and stack[-1] == "]"
+    cut = body.rfind(",")
+    candidates = [body[:cut]] if cut != -1 and inside_list else []
+    candidates.append(body)
+    if cut != -1 and not inside_list:
+        candidates.append(body[:cut])
+    for candidate in candidates:
+        data = _loads_dict(_closed(candidate))
+        if data and any(key in data for key in SALVAGE_KEYS):
+            return data
     return None
 
 
@@ -532,11 +610,12 @@ async def run_diagnosis(
     except Exception as exc:  # noqa: BLE001 - any provider failure costs the why, not the where
         return critic_could_not_read(f"the critic model could not be reached: {exc}"[:300])
     try:
-        root_cause, suspected, guidance, dropped = parse_reply(answer, trace, known_files)
+        root_cause, suspected, guidance, dropped, partial = parse_reply(answer, trace, known_files)
     except DiagnoseError as exc:
         return critic_could_not_read(f"{exc}; the raw answer starts: {answer[:200]!r}")
     base.status = "diagnosed"
     base.reason = ""
+    base.partial_answer = partial
     base.root_cause = root_cause
     base.suspected_files = suspected or trace.suspected()
     base.guidance = guidance
