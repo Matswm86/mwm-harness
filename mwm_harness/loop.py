@@ -41,7 +41,7 @@ from mwm_harness.config import (
     is_subscription_endpoint,
     workspace_root,
 )
-from mwm_harness.context import ContextMeter, build_system_prompt
+from mwm_harness.context import ContextMeter, EnvironmentTracker, build_system_prompt
 from mwm_harness.costwatch import TurnCostWatch, log_spike
 from mwm_harness.diagnose import (
     DiagnoseBudget,
@@ -356,6 +356,7 @@ class Session:
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
+        self._env = EnvironmentTracker(cwd)
         self._code_map: str | None = None  # this turn's map, for a model with a small window
         self.loaded_tools: set[str] = set()
         self.tool_search = ToolSearch(self._deferred_tools, self.loaded_tools)
@@ -366,7 +367,11 @@ class Session:
     @property
     def system_prompt(self) -> str:
         if self._system_prompt is None:
-            parts = [build_system_prompt(self.cwd, workspace_root(), self.model)]
+            parts = [
+                build_system_prompt(
+                    self.cwd, workspace_root(), self.model, self.settings.rules_prompt
+                )
+            ]
             parts.append(skills_prompt(self.skills) if "Skill" in self.tools else "")
             parts.append(self._mcp_instructions())
             parts.append(self._code_map_prompt())
@@ -790,6 +795,12 @@ class Session:
             self._add(
                 Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
             )
+        if self.settings.rules_prompt == "digest":
+            # The volatile environment fields travel here, not in the system prompt, so the
+            # fixed prompt stays byte-stable and the hosted prompt cache holds (plan item 2).
+            env_note = self._env.note(self.permissions.mode)
+            if env_note:
+                self._add(Message("user", reminder(env_note), is_meta=True))
         if self.permissions.mode == "plan":
             self._add(Message("user", reminder(PLAN_MODE_NOTE), is_meta=True))
         self._add(Message("user", prompt))

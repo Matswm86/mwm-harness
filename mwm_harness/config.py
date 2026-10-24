@@ -22,6 +22,7 @@ SUBSCRIPTION_ENDPOINT_MARKER = "token-plan."
 # so a configured max is clamped there rather than sent and refused.
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 PRUNE_MODES = ("off", "over_budget", "every_turn")
+RULES_PROMPT_MODES = ("digest", "full")
 
 
 class ConfigError(Exception):
@@ -327,6 +328,11 @@ class Settings:
     # back to this session's own model with a visible warning, like ``compact_model``: a goal
     # the lead model checks itself is weaker evidence, and saying so beats a dead setting.
     goal_model: str = ""
+    # How the rules files and the memory index enter the system prompt (plan item 2).
+    # ``digest`` keeps only marked lines resident (headers + ⛔ hard-rule bullets) and names
+    # the full files for on-demand Read; ``full`` pastes them whole, the pre-item-2 behaviour,
+    # kept as the escape hatch if a probe shows a gate no longer lands.
+    rules_prompt: str = "digest"  # digest | full
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
     observation_pack_limit: int = 10 * 1024
@@ -358,5 +364,10 @@ def load_settings(path: Path | None = None) -> Settings:
         raise ConfigError(
             f"settings.toml: prune_tool_results must be one of {', '.join(PRUNE_MODES)} "
             f"or empty (choose by endpoint), got {settings.prune_tool_results!r}"
+        )
+    if settings.rules_prompt not in RULES_PROMPT_MODES:
+        raise ConfigError(
+            f"settings.toml: rules_prompt must be one of {', '.join(RULES_PROMPT_MODES)}, "
+            f"got {settings.rules_prompt!r}"
         )
     return settings

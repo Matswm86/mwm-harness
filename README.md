@@ -138,9 +138,19 @@ stdio server plays MCP, a mocked transport plays the web.
   A PreToolUse `allow` does NOT skip the approval prompt unless
   `hooks_may_approve = true` is set, because a command-rewriting hook answers
   `allow` for everything it rewrites.
-- `context.py`: system prompt from the rules files it finds (`CLAUDE.md`,
-  `RULES.md`, `AGENTS.md`, with `@file.md` imports) plus the workspace memory
-  index; the context meter reads the endpoint's own usage numbers.
+- `context.py`: system prompt from the rules files it finds (`QWEN.md`,
+  `CLAUDE.md`, `RULES.md`, `AGENTS.md`, with `@file.md` imports) plus the workspace
+  memory index; the context meter reads the endpoint's own usage numbers. By
+  default (`rules_prompt = "digest"`) the rules travel as a digest: every heading
+  and every line carrying the workspace's hard-rule mark `⛔` stays resident, plus
+  whole sections under a `CRITICAL` or `Hard Rules` heading, and the rest is read
+  with `Read` when a task needs it. Each source gets its own section and cap, so a
+  long imported index cannot push the importing file's rules out. The working
+  directory, the date, the git branch and the permission mode stay out of the
+  prompt so it is byte-stable across turns and the endpoint's prompt cache holds;
+  they arrive as an environment reminder in the first user message and again only
+  when one of them moves. `rules_prompt = "full"` pastes the whole text of every
+  file into the prompt instead, which is the pre-digest behaviour.
 - `mcp_client.py`: reads `.mcp.json` as Claude Code writes it (project, workspace,
   then `mcp.json` in the config folder) and offers each server tool to the model
   as `mcp__server__tool`. Two transports, no SDK dependency: stdio (one JSON-RPC
@@ -468,8 +478,8 @@ Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
 permission mode, sandbox, `sandbox_tasks_max`, `sandbox_memory_max_mb`,
 `sandbox_file_max_mb`, `sandbox_tmpfs_max_mb`, `session_write_cap_mb`,
 extra writable and readable paths, `bash_env_keep`,
-`max_requests_per_turn`, `prune_tool_results`, `prune_keep_turns`, `prune_min_chars`,
-`compact_model`, `goal_max_turns`, `goal_max_requests`, `goal_check_timeout`,
+`max_requests_per_turn`, `rules_prompt`, `prune_tool_results`, `prune_keep_turns`,
+`prune_min_chars`, `compact_model`, `goal_max_turns`, `goal_max_requests`, `goal_check_timeout`,
 `goal_model`, hook settings files, `mcp_allow`, `mcp_files`,
 `skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
