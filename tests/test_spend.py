@@ -68,6 +68,114 @@ def test_an_unpriced_model_is_costed_at_the_most_expensive_pair() -> None:
     assert total == pytest.approx(3.301 + 9.902)
 
 
+def _rows() -> list[dict]:
+    paths = sorted(spend.ledger_path().parent.glob("*.jsonl"))
+    assert len(paths) == 1, f"expected one ledger, got {paths}"
+    return [json.loads(x) for x in paths[0].read_text().splitlines() if x.strip()]
+
+
+@pytest.mark.parametrize(
+    ("model", "usage", "expected"),
+    [
+        # The harness' own steady state: every turn resends the system prompt and
+        # the tool list, so almost all of the input is a cache hit. Numbers from
+        # this box's session transcripts, 151 pay-as-you-go flash calls.
+        (
+            "qwen3.8-flash",
+            {
+                "prompt_tokens": 30_456,
+                "completion_tokens": 225,
+                "prompt_tokens_details": {"cached_tokens": 22_464, "text_tokens": 30_456},
+            },
+            7_992 * 0.15 / 1e6 + 22_464 * 0.15 * 0.10 / 1e6 + 225 * 0.47 / 1e6,
+        ),
+        (
+            "qwen3.8-max",
+            {
+                "prompt_tokens": 2011,
+                "completion_tokens": 300,
+                "prompt_tokens_details": {"cached_tokens": 1792, "text_tokens": 2011},
+            },
+            219 * 2.00 / 1e6 + 1792 * 2.00 * 0.10 / 1e6 + 300 * 6.00 / 1e6,
+        ),
+    ],
+)
+def test_cached_input_is_billed_at_a_tenth_of_the_input_price(
+    model: str, usage: dict, expected: float
+) -> None:
+    spend.record(model, usage)
+    row = _rows()[0]
+    assert row["cost_usd"] == pytest.approx(round(expected, 8))
+    assert row["cached_input_tokens"] == usage["prompt_tokens_details"]["cached_tokens"]
+    # input_tokens stays the provider's own prompt_tokens, cached part included.
+    assert row["input_tokens"] == usage["prompt_tokens"]
+
+
+def test_a_cache_hit_is_cheaper_than_the_same_call_without_one() -> None:
+    """The direction of the fix, as a positive control.
+
+    Both calls report the same prompt_tokens, so a record() that ignored the cache
+    details would price them identically and this test would fail rather than pass
+    blindly.
+    """
+    base = {"prompt_tokens": 30_456, "completion_tokens": 225}
+    spend.record("qwen3.8-flash", dict(base))
+    spend.record("qwen3.8-flash", dict(base, prompt_tokens_details={"cached_tokens": 22_464}))
+    cold, warm = (r["cost_usd"] for r in _rows())
+    assert warm < cold
+    # 22,464 tokens at 10% of $0.15 instead of $0.15 is $0.304 off a $0.0068 call.
+    assert cold - warm == pytest.approx(22_464 * 0.15 * 0.90 / 1e6)
+
+
+def test_no_cache_hit_costs_what_it_cost_before() -> None:
+    """A zero hit must not move the price, so the old rows stay comparable."""
+    spend.record(
+        "qwen3.8-flash",
+        {
+            "prompt_tokens": 1715,
+            "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": 0, "text_tokens": 1715},
+        },
+    )
+    row = _rows()[0]
+    assert row["cost_usd"] == pytest.approx(1715 * 0.15 / 1e6 + 1 * 0.47 / 1e6)
+    assert row["cached_input_tokens"] == 0
+
+
+def test_a_usage_block_without_the_details_field_is_not_a_crash() -> None:
+    """An endpoint that omits the details block still gets priced, at full rate."""
+    spend.record("qwen3.8-flash", {"prompt_tokens": 100, "completion_tokens": 5})
+    row = _rows()[0]
+    assert row["cached_input_tokens"] == 0
+    assert row["cost_usd"] == pytest.approx(100 * 0.15 / 1e6 + 5 * 0.47 / 1e6)
+
+
+def test_more_cached_tokens_than_prompt_tokens_cannot_make_a_call_free() -> None:
+    spend.record(
+        "qwen3.8-flash",
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 999_999},
+        },
+    )
+    row = _rows()[0]
+    assert row["input_tokens"] == 100
+    assert row["cached_input_tokens"] == 100
+    assert row["cost_usd"] == pytest.approx(100 * 0.15 * 0.10 / 1e6)
+
+
+def test_a_details_field_that_is_not_a_mapping_is_not_a_crash() -> None:
+    """A malformed usage block prices as zero, it never raises into the turn."""
+    spend.record(
+        "qwen3.8-flash",
+        {"prompt_tokens": 100, "completion_tokens": 5, "prompt_tokens_details": "none"},
+    )
+    row = _rows()[0]
+    assert row["cached_input_tokens"] == 0
+    assert row["cost_usd"] == pytest.approx(100 * 0.15 / 1e6 + 5 * 0.47 / 1e6)
+
+
 def test_budget_ok_refuses_once_the_month_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
     spend.record("qwen3.8-flash", {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000})
     assert spend.month_spend_usd()[0] == pytest.approx(0.62)
@@ -101,9 +209,10 @@ def test_the_fallback_table_is_what_runs_here() -> None:
     The cross-check that the two tables agree lives in
     core/tests/test_llm_backends_cutover.py, where both modules are importable.
     """
-    prices, unpriced = spend._core_tables()
+    prices, unpriced, cache_factor = spend._core_tables()
     assert prices is spend.FALLBACK_PRICES_USD_PER_M
     assert unpriced == spend.FALLBACK_UNPRICED_USD_PER_M
+    assert cache_factor == spend.FALLBACK_CACHE_HIT_INPUT_FACTOR
     assert prices["qwen3.8-flash"] == (0.15, 0.47)
     assert prices["qwen3.8-max"] == (2.00, 6.00)
     # Every model the harness registers on a metered endpoint must be priced, or

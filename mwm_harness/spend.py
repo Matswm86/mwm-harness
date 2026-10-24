@@ -46,26 +46,40 @@ FALLBACK_PRICES_USD_PER_M: dict[str, tuple[float, float]] = {
     "qwen3-vl-plus": (0.20, 1.60),
 }
 FALLBACK_UNPRICED_USD_PER_M = (3.301, 9.902)
+# A cache-hit input token bills at this fraction of the model's standard input
+# price (Alibaba sheet, read 2026-10-24). Copy of core.llm_backends' constant of
+# the same name; core/tests/test_llm_backends_cutover.py::
+# test_harness_spend_table_matches_core fails if the two drift apart.
+FALLBACK_CACHE_HIT_INPUT_FACTOR = 0.10
 
 
 def workspace_root() -> Path:
     return Path(os.environ.get("MWM_AI_ROOT", str(Path.home() / "MWM")))
 
 
-def _core_tables() -> tuple[dict[str, tuple[float, float]], tuple[float, float]]:
-    """core.llm_backends' price table when reachable, else the local copy."""
+def _core_tables() -> tuple[dict[str, tuple[float, float]], tuple[float, float], float]:
+    """core.llm_backends' price tables when reachable, else the local copies."""
     root = str(workspace_root())
     if root not in os.sys.path:
         os.sys.path.insert(0, root)
     try:
         from core.llm_backends import (  # noqa: PLC0415
+            BAILIAN_CACHE_HIT_INPUT_FACTOR,
             BAILIAN_PRICES_USD_PER_M,
             BAILIAN_UNPRICED_USD_PER_M,
         )
 
-        return BAILIAN_PRICES_USD_PER_M, BAILIAN_UNPRICED_USD_PER_M
+        return (
+            BAILIAN_PRICES_USD_PER_M,
+            BAILIAN_UNPRICED_USD_PER_M,
+            BAILIAN_CACHE_HIT_INPUT_FACTOR,
+        )
     except Exception:  # noqa: BLE001 - metering must never break a harness turn
-        return FALLBACK_PRICES_USD_PER_M, FALLBACK_UNPRICED_USD_PER_M
+        return (
+            FALLBACK_PRICES_USD_PER_M,
+            FALLBACK_UNPRICED_USD_PER_M,
+            FALLBACK_CACHE_HIT_INPUT_FACTOR,
+        )
 
 
 def is_metered(base_url: str) -> bool:
@@ -131,17 +145,45 @@ def budget_ok(model: str) -> bool:
 
 
 def record(model: str, usage: dict | None) -> None:
-    """Append one priced call. A write failure is logged, never raised."""
+    """Append one priced call. A write failure is logged, never raised.
+
+    `input_tokens` stays the API's own `prompt_tokens`, cache-hit part included.
+    That part is reported beside it in `cached_input_tokens` and billed at
+    FALLBACK_CACHE_HIT_INPUT_FACTOR (core's BAILIAN_CACHE_HIT_INPUT_FACTOR) of the
+    input price, because a cache-hit input token costs a tenth of a new one on the
+    Alibaba sheet. Measured on this box 2026-10-24 from the harness' own session
+    transcripts: 151 pay-as-you-go flash calls sent 4,604,942 prompt tokens of
+    which 3,399,424 (73.8%) came back as cached_tokens, so billing every input
+    token at full rate over-counted the harness' biggest ledger share by 2.2x,
+    which fires the monthly cap early and hides a real overspend in a phantom one.
+    """
     if not usage:
         return
-    prices, unpriced = _core_tables()
+    prices, unpriced, cache_factor = _core_tables()
     price_in, price_out = prices.get(model, unpriced)
     try:
         in_tok = int(usage.get("prompt_tokens") or 0)
         out_tok = int(usage.get("completion_tokens") or 0)
     except (ValueError, TypeError):
         in_tok = out_tok = 0
-    cost = in_tok / 1_000_000 * price_in + out_tok / 1_000_000 * price_out
+    # Parsed apart from the token counts on purpose: a malformed details field must
+    # cost the call cached=0, not zero the counts too, which would bill a paid call
+    # at nothing and drain the budget unwatched.
+    cached_in = 0
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        try:
+            cached_in = int(details.get("cached_tokens") or 0)
+        except (ValueError, TypeError):
+            cached_in = 0
+    # A provider that reports more cached than prompted tokens must not be able to
+    # turn a paid call free, so the cached share is clamped inside the input count.
+    cached_in = max(0, min(cached_in, in_tok))
+    cost = (
+        (in_tok - cached_in) / 1_000_000 * price_in
+        + cached_in / 1_000_000 * price_in * cache_factor
+        + out_tok / 1_000_000 * price_out
+    )
     path = ledger_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +194,7 @@ def record(model: str, usage: dict | None) -> None:
                         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                         "model": model,
                         "input_tokens": in_tok,
+                        "cached_input_tokens": cached_in,
                         "output_tokens": out_tok,
                         "price_in_per_m": price_in,
                         "price_out_per_m": price_out,
@@ -166,6 +209,7 @@ def record(model: str, usage: dict | None) -> None:
 
 
 __all__ = [
+    "FALLBACK_CACHE_HIT_INPUT_FACTOR",
     "FALLBACK_PRICES_USD_PER_M",
     "FALLBACK_UNPRICED_USD_PER_M",
     "METERED_HOSTS",
