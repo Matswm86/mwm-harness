@@ -336,6 +336,15 @@ class Settings:
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
     observation_pack_limit: int = 10 * 1024
+    # Write one line per model request into the transcript, enough to rebuild it later
+    # (plan item 4): model, effort, the message positions sent, and digests of the system
+    # prompt, the tool list and the model spec, with the large parts stored once per session
+    # instead of once per request. Turning it off leaves the transcript without an audit of
+    # what the model actually received, so it stays on by default.
+    log_requests: bool = True
+    # Debug mode: after each request, rebuild it from the transcript and warn when the file
+    # no longer describes what went out. Costs one file read per turn and no model call.
+    verify_requests: bool = False
     # Strip secrets (keys, tokens, passwords, .env values) from every tool result and hook note
     # before the model, the panel or the transcript see it. Extra regexes are masked too.
     redact: bool = True
@@ -369,5 +378,10 @@ def load_settings(path: Path | None = None) -> Settings:
         raise ConfigError(
             f"settings.toml: rules_prompt must be one of {', '.join(RULES_PROMPT_MODES)}, "
             f"got {settings.rules_prompt!r}"
+        )
+    if settings.verify_requests and not settings.log_requests:
+        raise ConfigError(
+            "settings.toml: verify_requests rebuilds a request from the log that log_requests "
+            "writes, so it cannot be on while log_requests is off"
         )
     return settings

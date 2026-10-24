@@ -66,6 +66,8 @@ from mwm_harness.observation_pack import pack_observations
 from mwm_harness.permissions import Permissions, load_extra_deny
 from mwm_harness.providers import Provider, ProviderError
 from mwm_harness.redact import WITHHELD, Redactor, describe
+from mwm_harness.request_log import VERIFY_SUBTYPE, RequestLog
+from mwm_harness.request_log import verify as verify_request
 from mwm_harness.review import (
     SECURITY_EXTRA,
     Comment,
@@ -261,6 +263,9 @@ class Session:
             self.transcript.note("resumed", f"continues {resume_from.name}")
             for message in self.messages:
                 self.transcript.append(message)
+        # Every request this session sends gets a line in that transcript (plan item 4), so
+        # what the model received can be rebuilt later instead of guessed at.
+        self.request_log = RequestLog(self.transcript)
         self.meter = ContextMeter(model.context_window, model.soft_budget)
         self.cost_watch = TurnCostWatch()
         self._turn_completion_start = 0
@@ -606,6 +611,12 @@ class Session:
         assembler = StreamAssembler()
         try:
             request = [*self.messages, Message("user", ask)]
+            if self.settings.log_requests:
+                # The ask is never stored, so the log keeps this one as its own blob and the
+                # summary request becomes rebuildable like any turn request.
+                self.request_log.record(
+                    spec, self.system_prompt, request, [], self.effort, kind="compact"
+                )
             async for chunk in self.provider.stream(
                 spec, self.system_prompt, request, [], self.effort
             ):
@@ -990,6 +1001,10 @@ class Session:
                     ev.Notice("warn", f"observation archive failed, sent in full: {error}")
                 )
         messages = self._with_disk_note(messages)
+        if self.settings.log_requests:
+            # Logged after the pack and after the disk reminder, so the line describes the
+            # request that leaves the process and not the history this session stores.
+            self.request_log.record(self.model, self.system_prompt, messages, specs, self.effort)
         stream = self.provider.stream(self.model, self.system_prompt, messages, specs, self.effort)
         async for chunk in stream:
             assembler.feed(chunk)
@@ -1010,6 +1025,21 @@ class Session:
                     index = fragment.get("index", 0)
                     call_id, name = assembler.call_head(index)
                     self.bus.emit(ev.ToolArgsDelta(index, call_id, name, arguments))
+        if self.settings.verify_requests:
+            self._verify_logged_request()
+
+    def _verify_logged_request(self) -> None:
+        """Debug mode: rebuild the request that just went out from the transcript alone.
+
+        A mismatch means the file no longer describes what the model received, which would
+        make every later audit of this session worthless, so it is said out loud and written
+        into the transcript instead of staying inside a log line nobody reads.
+        """
+        checked = verify_request(self.transcript.path)
+        if checked.ok:
+            return
+        self.bus.emit(ev.Notice("warn", f"request log does not rebuild: {checked.reason}"))
+        self.transcript.note(VERIFY_SUBTYPE, checked.reason)
 
     # ------------------------------------------------------------------ tools
 

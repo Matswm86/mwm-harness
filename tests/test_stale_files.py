@@ -2,7 +2,9 @@
 
 A session that read a file keeps the mtime it saw. Before each request the recorded files are
 stat'ed, and anything that moved goes into one reminder at the tail of that request. The reminder
-is not part of the history: it never reaches ``session.messages`` or the transcript file.
+is not part of the history: it never reaches ``session.messages``, so ``/resume`` never replays it
+and no gate reads it as something the person said. The request log (plan item 4) does keep its
+text, because that request carried it and the log has to rebuild what the model received.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from conftest import FixedApprover
 from mwm_harness.providers import chunks_for
 from mwm_harness.sandbox import Sandbox
 from mwm_harness.tools.base import ToolContext
+from mwm_harness.transcript import load_messages
 
 MARKER = "changed on disk since you last read them"
 
@@ -78,7 +81,7 @@ def test_a_file_changed_on_disk_is_named_in_the_next_request_until_it_is_read_ag
     assert MARKER not in sent(provider.requests[3])
 
 
-def test_the_reminder_never_enters_the_history_or_the_transcript(make_session):
+def test_the_reminder_never_enters_the_history(make_session):
     session, _, provider = make_session([read_a_py(), chunks_for("read it"), chunks_for("done")])
     target = project_file(session)
     run(session.send("look at a.py"))
@@ -87,7 +90,14 @@ def test_the_reminder_never_enters_the_history_or_the_transcript(make_session):
 
     assert MARKER in sent(provider.requests[2])
     assert all(MARKER not in json.dumps(message.content) for message in session.messages)
-    assert MARKER not in session.transcript.path.read_text(encoding="utf-8")
+    # The request log (plan item 4) does keep the text, as the blob of the one request that
+    # carried it: model-visible means logged. What must not happen is the reminder becoming a
+    # conversation entry, because then /resume would replay it and a Stop gate would read it
+    # as something Mats said.
+    path = session.transcript.path
+    assert MARKER in path.read_text(encoding="utf-8")
+    resumed = load_messages(path)
+    assert resumed and all(MARKER not in json.dumps(m.content) for m in resumed)
     # The reminder changes nothing on disk either: it is request-only.
     assert target.read_text(encoding="utf-8") == "x = 2\n"
 
