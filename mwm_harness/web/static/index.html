@@ -1231,6 +1231,18 @@ function specFinished(e) {
   setLive(false, written.length ? `spec ${s.slug}: ${written.join(", ")}` : `spec ${s.status}`);
   note(failed ? "warn" : "info", `spec ${s.slug} (${s.dir}): ${bits.join(" · ")}${stopped ? ` · ${stopped.step} ${stopped.status}: ${stopped.errors.length ? stopped.errors.join("; ") : stopped.reason}` : ""}`);
 }
+/* ------- item 24: advisor on a timer (off by default), notes gate nothing ------- */
+function advisorStarted(e) { setLive(true, `${e.model} reading the session (every ${e.minutes} min or ${e.calls} calls)`); }
+function advisorFinished(e) {
+  const a = e.advice;
+  const tok = (a.prompt_tokens || 0) + (a.completion_tokens || 0);
+  const cost = `advisor cost ${tok.toLocaleString()} tokens`;
+  setLive(false, "advisor read the session");
+  if (turn) turn.advisor = a.status === "advised" ? `${a.model}: ${a.note}` : a.status;
+  if (a.status === "advised") { note("warn", `advisor (${a.model}, advice only, gates nothing): ${a.note} · ${cost}`); return; }
+  if (a.status === "quiet") { note("info", `advisor (${a.model}): read the session, found nothing worth a note · ${cost}`); return; }
+  note(a.status === "failed" ? "warn" : "info", `advisor ${a.status}: ${a.reason || "no reason given"}${tok ? ` · ${cost}` : ""}`);
+}
 /* ------- items 30 + 22: bug flags, prove-the-fix, assurance card ------- */
 const assuranceByTab = new Map();  // tab id -> last AssuranceFinished card
 const ASSUR_WORD = { pass: "PASS", fail: "FAIL", not_run: "NOT RUN", na: "N/A", "": "EMPTY" };
@@ -1297,7 +1309,8 @@ function recordOutput(e) {
   const card = { tab: session, time: clock("Europe/Oslo"), prompt: turn.prompt, verdict: first || `turn ended: ${e.reason}`,
     tag, label: e.reason === "done" ? (turn.errors ? "DONE, ERRORS" : held ? "DONE, ASSURANCE HELD" : "DONE") : e.reason.toUpperCase(),
     tools: turn.tools, errors: turn.errors, files: [...turn.files], checks: turn.checks || "",
-    flags: turn.flags || "", fix: turn.fix || "", assurance: turn.assurance || null, text };
+    flags: turn.flags || "", fix: turn.fix || "", assurance: turn.assurance || null,
+    advisor: turn.advisor || "", text };
   const list = outputs.get(session) || []; list.unshift(card); outputs.set(session, list.slice(0, 30));
   drawOutputs(); turn = null;
   const n = $("vresult").querySelector(".n") || $("vresult").appendChild(el("span", "n"));
@@ -1323,6 +1336,7 @@ function openOutput(o) {
   row("tool calls", o.tools === null ? "not counted: the turn began before this page connected" : `${o.tools}${o.errors ? `, ${o.errors} failed` : ""}`);
   row("files", o.files.length ? `${o.files.length} written` : "none written");
   if (o.checks) row("checks", o.checks);
+  if (o.advisor) row("advisor (advice only)", o.advisor);
   if (o.flags) row("bug flags", o.flags);
   if (o.fix) row("prove-the-fix", o.fix);
   if (o.assurance) {
@@ -1726,6 +1740,8 @@ const handlers = {
   AssuranceFinished: assuranceFinished,
   SpecStarted: specStarted,
   SpecFinished: specFinished,
+  AdvisorStarted: advisorStarted,
+  AdvisorFinished: advisorFinished,
   ReviewStarted: reviewStarted,
   ReviewFinished: reviewFinished,
   ReviewComment: () => {},  // the desk clicked remember: the note below is the confirmation
@@ -1852,6 +1868,7 @@ const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["age
   ["models", "list models"], ["think", "show thinking on/off"], ["permissions", "file, shell, web rules"], ["hooks", "loaded hooks"],
   ["skills", "loaded skills"], ["memory", "memory files"], ["resume", "resume a session"], ["init", "write a project note"],
   ["commands", "all commands"], ["check", "lint + type-check changed files"], ["runit", "which changed lines tests run"],
+  ["advise", "advisor on a timer: on [minutes] / off / status"],
   ["trace", "calls one test makes"], ["review", "a second reader over this turn's changes"],
   ["review-send", "send comment N of the last review as your next turn"], ["review-remember", "keep comment N for every later review"],
   ["undo", "put back the last turn's file changes"], ["stop", "stop all: emergency stop"], ["clear", "clear the history"], ["help", "help"]];

@@ -16,8 +16,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mwm_harness import codemap, levels
+from mwm_harness import advisor, codemap, levels
 from mwm_harness import events as ev
+from mwm_harness.advisor import Advice, advice_call, run_advice
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.assurance import Card as AssuranceCard
 from mwm_harness.assurance import build_card
@@ -323,6 +324,16 @@ class Session:
         # or /spec status saw, so the report can quote a number it actually measured.
         self.spec: Spec | None = None
         self.spec_coverage: dict[str, list[str]] = {}
+        # Item 24: advisor on a timer, off by default. /advise changes minutes at runtime;
+        # the deadline is a monotonic clock reading, None means no time trigger is armed.
+        self.advise_minutes = max(0, self.settings.advise_minutes)
+        self.advise_calls = max(0, self.settings.advise_calls)
+        self._advise_at: float | None = (
+            time.monotonic() + self.advise_minutes * 60 if self.advise_minutes > 0 else None
+        )
+        self._calls_since_advice = 0
+        self.advice: Advice | None = None  # the newest advisor pass, note and cost included
+        self.advise_totals = {"notes": 0, "prompt_tokens": 0, "completion_tokens": 0}
         self.tool_ctx.assurance_handler = self.assurance_report
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
@@ -769,6 +780,7 @@ class Session:
                     note = f"turn ended: the same tool call {self._identical_calls} times in a row"
                     self.bus.emit(ev.Notice("error", note + " (max_identical_calls)"))
                     return self._end("error", note)
+                await self._advisor_boundary(len(calls))
                 continue
 
             outcome = await self.hooks.run("Stop", stop_hook_active=stop_blocks > 0)
@@ -1754,6 +1766,225 @@ class Session:
             self.bus.emit(ev.Notice("warn", kept_out))
         self.bus.emit(ev.ReviewComment(comment.file, comment.line, comment.text, remember=True))
         return path
+
+    # ------------------------------------------------------------------ advisor (item 24)
+
+    def advisor_spec(self) -> tuple[ModelSpec, str]:
+        """The advisor model: ``advisor_model`` as a registry id or an ``agent_models`` key.
+
+        An unresolvable name falls back to this session's model with a warning, like the
+        Review Desk: the timer must not die on a typo, and one model advising its own work is
+        weaker evidence the warning names rather than a silent substitution.
+        """
+        wanted = (self.settings.advisor_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"the advisor model {wanted!r} is not configured; "
+            f"this session's model ({self.model.id}) advises instead",
+        )
+
+    def _advisor_exchanges(self) -> list[str]:
+        """One line per recent exchange, oldest first. Meta messages stay out.
+
+        Meta messages are harness plumbing (reminders, hook feedback, earlier advisor notes):
+        the advisor reads the work, not the pipes. Tool results are capped hard: an advisor
+        needs to see that a Bash run failed, not to re-read its whole log.
+        """
+        lines: list[str] = []
+        tail = [message for message in self.messages if not message.is_meta][
+            -advisor.TAIL_MESSAGES :
+        ]
+        for message in tail:
+            if message.role == "assistant":
+                text = message.text()
+                if text:
+                    lines.append(f"[model] {text[: advisor.MAX_BLOCK_CHARS]}")
+                for call in message.tool_uses():
+                    arguments = json.dumps(call["input"], default=str, sort_keys=True)
+                    lines.append(f"[model calls {call['name']}] {arguments[:160]}")
+            else:
+                for block in message.blocks():
+                    kind = block.get("type")
+                    if kind == "tool_result":
+                        body = str(block.get("content") or "")[:120]
+                        flag = " FAILED" if block.get("is_error") else ""
+                        lines.append(f"[tool result{flag}] {body}")
+                    elif kind == "text":
+                        body = block.get("text") or ""
+                        if body.strip():
+                            lines.append(f"[person] {body[: advisor.MAX_BLOCK_CHARS]}")
+        return lines
+
+    async def _advisor_boundary(self, n_calls: int) -> None:
+        """Item 24: the advisor's one chance to speak between two request rounds.
+
+        Checked only here, after a finished batch of tool calls and before the next model
+        request: never mid-call. Nothing inside may break the turn: a cancel or a crash
+        becomes a notice and the working model carries on, because an advisor that holds a
+        veto is the failure mode this item exists to avoid.
+        """
+        if self.advise_minutes <= 0 and self.advise_calls <= 0:
+            return
+        self._calls_since_advice += n_calls
+        time_due = self._advise_at is not None and time.monotonic() >= self._advise_at
+        calls_due = self.advise_calls > 0 and self._calls_since_advice >= self.advise_calls
+        if not (time_due or calls_due):
+            return
+        since = self._calls_since_advice
+        self._calls_since_advice = 0
+        if self.advise_minutes > 0:
+            self._advise_at = time.monotonic() + self.advise_minutes * 60
+        else:
+            self._advise_at = None
+        try:
+            await self.run_advice_note(since)
+        except asyncio.CancelledError:
+            _uncancel()
+            self.bus.emit(ev.Notice("info", "advisor cancelled: this boundary gets no note"))
+        except Exception as exc:  # noqa: BLE001 - a broken note is reported, never swallowed
+            self.bus.emit(
+                ev.Notice("error", f"advisor not run ({type(exc).__name__}: {exc})"[:300])
+            )
+
+    async def run_advice_note(self, calls: int = 0) -> Advice:
+        """One advisor pass over a bounded digest. Advice only: it gates and decides nothing."""
+        spec, warn = self.advisor_spec()
+        if warn:
+            self.bus.emit(ev.Notice("warn", warn))
+
+        def finish(advice: Advice) -> Advice:
+            self.advice = advice
+            self.advise_totals["prompt_tokens"] += advice.prompt_tokens
+            self.advise_totals["completion_tokens"] += advice.completion_tokens
+            if advice.status == "advised":
+                self.advise_totals["notes"] += 1
+            self.bus.emit(ev.AdvisorFinished(advice.as_dict()))
+            return advice
+
+        if isinstance(self.approver, ev.DenyAll) and is_subscription_endpoint(spec.base_url):
+            return finish(
+                Advice(
+                    model=spec.id,
+                    status="skipped",
+                    reason=(
+                        f"a headless run may not call {spec.id}: it sits on a subscription plan "
+                        "endpoint. Set advisor_model to a pay-as-you-go or local id, or turn the "
+                        "advisor on from an interactive session"
+                    ),
+                    minutes=self.advise_minutes,
+                    calls=calls,
+                )
+            )
+        task = self.undo_log.turns[-1].prompt if self.undo_log.turns else ""
+        digest_text = self._clean(
+            advisor.digest(
+                task, list(self.tool_ctx.todos), list(self.touched), self._advisor_exchanges()
+            )
+        )
+        self.bus.emit(ev.AdvisorStarted(spec.id, self.advise_minutes, calls))
+
+        async def caller(system: str, user: str) -> tuple[str, dict[str, Any]]:
+            return await advice_call(self.provider, spec, system, user)
+
+        advice = await run_advice(digest_text, task, caller, spec.id, self.advise_minutes, calls)
+        if advice.status == "advised":
+            # The note reaches the working model on its next request as a labelled meta
+            # message, and it rides the transcript, so /resume reads the same history.
+            self._add(
+                Message(
+                    "user",
+                    reminder(
+                        f"advisor ({advice.model}, advice only: it blocks nothing and "
+                        f"changes no permission):\n{advice.note}"
+                    ),
+                    is_meta=True,
+                )
+            )
+        return finish(advice)
+
+    def advise_command(self, argument: str) -> list[str]:
+        """``/advise on [minutes] | off | status``. Toggling runs no model and costs nothing."""
+        words = argument.split()
+        action = words[0].lower() if words else "status"
+        if action == "on":
+            minutes = 5
+            if len(words) > 2:
+                return [f"advise: I read {words[1]!r} as the minutes and ignored {words[2:]!r}"]
+            if len(words) > 1:
+                try:
+                    minutes = int(words[1])
+                except ValueError:
+                    return [
+                        f"advise: {words[1]!r} is not a number of minutes "
+                        "(usage: /advise on [minutes])"
+                    ]
+                if minutes < 1:
+                    return ["advise: minutes must be at least 1 (0 is what off is for)"]
+            self.advise_minutes = minutes
+            self._advise_at = time.monotonic() + minutes * 60
+            self._calls_since_advice = 0
+            spec, warn = self.advisor_spec()
+            lines = [
+                f"advisor on: one note every {minutes} min, arriving at tool-call boundaries",
+                f"model: {spec.id}; advice only, it gates nothing and moves no permission",
+            ]
+            if warn:
+                lines.append(warn)
+            if self.advise_calls > 0:
+                lines.append(f"a note also lands after every {self.advise_calls} tool calls")
+            return lines
+        if action == "off":
+            self.advise_minutes = 0
+            self.advise_calls = 0
+            self._advise_at = None
+            self._calls_since_advice = 0
+            return ["advisor off: no more notes this session"]
+        if action == "status":
+            return self._advise_status()
+        return ["usage: /advise on [minutes] | /advise off | /advise status"]
+
+    def _advise_status(self) -> list[str]:
+        spec, warn = self.advisor_spec()
+        totals = self.advise_totals
+        cost = (
+            f"advisor cost so far: {totals['prompt_tokens'] + totals['completion_tokens']:,} tokens"
+        )
+        if self.advise_minutes <= 0 and self.advise_calls <= 0:
+            lines = ["advisor: off (start it with /advise on [minutes])"]
+            if totals["notes"] or warn:
+                if warn:
+                    lines.append(warn)
+                lines.append(
+                    f"{totals['notes']} note(s) this session; {cost} "
+                    f"({totals['prompt_tokens']:,} in / {totals['completion_tokens']:,} out)"
+                )
+            return lines
+        parts = []
+        if self.advise_minutes > 0:
+            left = max(0.0, (self._advise_at or 0.0) - time.monotonic())
+            parts.append(
+                f"a note every {self.advise_minutes} min "
+                f"(next lands at a boundary in ~{left / 60:.1f} min)"
+            )
+        if self.advise_calls > 0:
+            parts.append(
+                f"a note every {self.advise_calls} tool calls "
+                f"({self._calls_since_advice} since the last)"
+            )
+        lines = ["advisor on: " + "; ".join(parts)]
+        if warn:
+            lines.append(warn)
+        lines.append(f"model: {spec.id}; notes gate nothing")
+        lines.append(
+            f"{totals['notes']} note(s) this session; {cost} "
+            f"({totals['prompt_tokens']:,} in / {totals['completion_tokens']:,} out)"
+        )
+        return lines
 
     async def changed_files(self) -> list[Path]:
         """What the last editing turn wrote, else what git reports changed or new."""

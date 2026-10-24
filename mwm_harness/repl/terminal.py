@@ -39,6 +39,9 @@ HELP = """\
 /level [beginner|engineer]  how the review desk is drawn, both from the same turn's data:
                       beginner = what it does, what could break, how to check it yourself;
                       engineer = the raw diff, callers, checks, coverage, trace. Redraws, never re-runs
+/advise on [minutes]|off|status   advisor on a timer (OFF by default): a second model reads a
+                      digest of this session every N minutes and leaves one short note at a
+                      tool-call boundary. Advice only: it blocks nothing and moves no permission
 /plan [off]           plan mode: reading tools only until you approve a plan; shows the last plan
 /permissions          mode, sandbox state and the hard deny list
 /tasks                the current task list
@@ -446,8 +449,40 @@ class Printer:
                 else:
                     code = DIM
                 self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.AdvisorStarted):
+            self.line(
+                self.paint(
+                    DIM,
+                    f"[advisor] {event.model} reading a digest of this session "
+                    f"(trigger: every {event.minutes} min or {event.calls} calls) …",
+                ),
+                event,
+            )
+        elif isinstance(event, ev.AdvisorFinished):
+            advice = event.advice
+            code = {
+                "advised": YELLOW,
+                "quiet": DIM,
+                "skipped": DIM,
+            }.get(str(advice.get("status")), RED)
+            for row in advisor_lines(advice):
+                self.line(self.paint(code, row), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
+
+
+def advisor_lines(advice: dict[str, Any]) -> list[str]:
+    """One advisor pass as plain lines. The note is advice; its cost is always named."""
+    status = str(advice.get("status"))
+    tokens = int(advice.get("prompt_tokens") or 0) + int(advice.get("completion_tokens") or 0)
+    cost = f" (advisor cost {tokens:,} tokens)"
+    model = advice.get("model") or "no model"
+    if status == "advised":
+        return [f"[advisor {model}]{cost} {advice.get('note') or ''}".rstrip()]
+    if status == "quiet":
+        return [f"[advisor {model}]: read the session, found nothing worth a note{cost}"]
+    verb = "skipped" if status == "skipped" else "failed"
+    return [f"[advisor {verb}]{cost} {advice.get('reason') or 'no reason given'}"]
 
 
 def bugflag_lines(report: dict[str, Any]) -> list[str]:
@@ -769,6 +804,11 @@ def run_command(
         if out.last_review is not None:
             out.line("the last review drawn again at this level, from the same turn's event:")
             out.draw_review(out.last_review)
+    elif name == "/advise":
+        # Item 24: toggling and status run no model. The notes themselves arrive on the bus
+        # at tool-call boundaries, printed by the Printer, never by this command.
+        for row in session.advise_command(argument):
+            out.line(row)
     elif name == "/plan":
         if argument == "off":
             session.set_mode("default")

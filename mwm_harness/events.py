@@ -279,6 +279,31 @@ class SpecFinished(Event):
 
 
 @dataclass
+class AdvisorStarted(Event):
+    """Item 24: the advisor on a timer is reading a digest of this session.
+
+    Fires at a tool-call boundary, never mid-call. ``minutes`` and ``calls`` say which
+    trigger landed; the note it produces is advice and gates nothing.
+    """
+
+    model: str
+    minutes: int
+    calls: int
+
+
+@dataclass
+class AdvisorFinished(Event):
+    """Item 24: one advisor pass. ``advice["status"]`` is advised, quiet, skipped or failed.
+
+    ``advice["note"]`` is the labelled advice the working model reads on its next request;
+    ``prompt_tokens`` and ``completion_tokens`` are the advisor's own cost, shown because a
+    background timer that bills invisibly is the one surprise this feature must not hide.
+    """
+
+    advice: dict[str, Any]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 

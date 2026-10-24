@@ -267,6 +267,16 @@ class Settings:
     # without re-running anything. A value that names neither level keeps engineer and says so as
     # a visible warning at the first review; a view preference must never abort a session.
     reading_level: str = "engineer"
+    # Advisor on a timer (plan item 24): OFF by default. A second model reads a bounded digest
+    # of the working session every N minutes (or every N tool calls, whichever lands first) and
+    # leaves one short labelled note at a tool-call boundary. It cannot block a tool and moves
+    # no permission; the "no" stays with permissions, tests and the assurance card.
+    advise_minutes: int = 0  # 0 = no time trigger
+    advise_calls: int = 0  # 0 = no tool-call-count trigger
+    # A models.toml id or an agent_models key. "" or an unresolvable name falls back to this
+    # session's own model with a visible warning: an advisor reading the same model's own work
+    # is weaker evidence, and saying so is honest, but a bad name must not kill the timer.
+    advisor_model: str = "critic"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

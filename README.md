@@ -360,6 +360,13 @@ stdio server plays MCP, a mocked transport plays the web.
   answers per file and the engineer's diff, callers, checks, coverage and trace. It
   calls no model, runs no check and touches no file, and a line it cannot fill from
   a field that already holds it says what is missing instead of guessing.
+- `advisor.py`: the advisor on a timer (plan item 24). It builds the bounded digest
+  one pass reads, calls the advisor model once, and turns the answer into a labelled
+  note or a named skip, timeout or failure, never into silence. It holds no veto: it
+  edits no file, touches no permission, and its whole reach is the one meta message
+  the working model reads at the next tool-call boundary. Each pass returns its own
+  token counts, because a timer that bills invisibly is the surprise this feature
+  exists to avoid.
 - `undo.py`: `/undo` (the panel's "undo turn" button) puts back the files the
   newest file-changing turn wrote with `Write` or `Edit`, from a copy taken
   before each write. It keeps the last 10 turns, leaves a file alone that
@@ -643,6 +650,34 @@ count does not move; the derivation's honesty rules (a file with no evidence say
 a criterion no test names is quoted with its id, a failing check is quoted with its
 own message); the terminal's `/level` redraw; and the shipped page's own switch under
 node, one tab's choice moving no other tab and never calling `send()`.
+
+## Advisor on a timer
+
+A second model reads the working session while it runs and leaves one short note: what is
+missing, what to verify next. It is off by default. `/advise on [minutes]` starts the timer
+(`/advise on` alone is five minutes), `/advise off` stops it, `/advise status` says what is
+armed and what the advisor has cost. The notes land only at tool-call boundaries, after a
+finished batch of tools and before the next model request, never mid-call.
+
+The note is advice and nothing more. It enters the transcript as a labelled meta message the
+working model reads on its next request. It can block no tool, approve no tool, and move no
+permission decision: the "no" stays with permissions, checks and the assurance card. The
+advisor reads a bounded digest (task, todo state, files touched, the last twelve exchanges with
+tool results capped), and when the digest is cut the cut is named inside it, so a note about
+half a session never reads like a note about all of it.
+
+Its cost is always shown, because a background timer that bills invisibly is the one surprise
+this feature must not hide: every pass reports its own tokens in the terminal line, the panel
+turn card and `/advise status`. Two settings arm it before the session starts
+(`advise_minutes`, `advise_calls`, `advisor_model` in `settings.toml`); the call-count trigger
+fires after every N tool calls instead of a clock. A headless run whose advisor model sits on
+a subscription-plan endpoint says so and skips instead of spending it.
+
+Tests: `tests/test_advisor.py` (14, all offline) runs the plan's closing test against scripted
+turns: notes arrive at boundaries only (a tool batch is fully closed at every note), turning
+it off stops them, and a note that "approves all writes" still leaves both Writes asking. It
+also pins the cost counting, the quiet answer that leaves no note, a malformed answer that
+fails visibly but never breaks the turn, the headless subscription skip, and the panel wiring.
 
 ## Setup
 
