@@ -131,6 +131,21 @@ class Compacted(Event):
 
 
 @dataclass
+class ToolResultsPruned(Event):
+    """Step 1 of compaction: old tool output replaced by one-line stubs.
+
+    No model call was made. ``tokens_saved`` is the harness's own character estimate
+    (``compaction.CHARS_PER_TOKEN``), never an endpoint figure, and it is what decides
+    whether step 2 runs at all.
+    """
+
+    trigger: str  # turn | auto
+    stubbed: int
+    chars_saved: int
+    tokens_saved: int
+
+
+@dataclass
 class FilesTouched(Event):
     """Project files the tools have read or written this session, newest last."""
 

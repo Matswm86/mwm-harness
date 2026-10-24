@@ -21,6 +21,7 @@ SUBSCRIPTION_ENDPOINT_MARKER = "token-plan."
 # Reasoning effort tiers, lowest first. The qwen3.8 family's ladder stops at xhigh,
 # so a configured max is clamped there rather than sent and refused.
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+PRUNE_MODES = ("off", "over_budget", "every_turn")
 
 
 class ConfigError(Exception):
@@ -123,6 +124,21 @@ def api_key_for(spec: ModelSpec, secrets: dict[str, str] | None = None) -> str:
     return key
 
 
+def is_local_endpoint(base_url: str) -> bool:
+    """True when ``base_url`` is a model server on this box (Ollama, llama.cpp, vLLM).
+
+    A local model has a small window and its fixed prompt can already be over the soft
+    budget, so history has to stay lean whatever the budget says. A hosted endpoint
+    charges for re-prefilled tokens only when the prompt cache misses, so there a stale
+    region that changes every turn costs more than the tokens it saves.
+    """
+    try:
+        host = urlparse(base_url).hostname or ""
+    except ValueError:
+        return False
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
 def is_subscription_endpoint(base_url: str) -> bool:
     """True when ``base_url`` is a subscription plan endpoint, not a pay-as-you-go one.
 
@@ -185,7 +201,7 @@ class Settings:
     max_stop_blocks: int = 3
     # Model requests one turn may make before the harness ends it. A weak model
     # can repeat one tool call forever; 0 switches the cap off.
-    max_requests_per_turn: int = 60
+    max_requests_per_turn: int = 120
     # The same tool call (name and input) this many times in a row ends the turn
     # without running it. Seen live 09-20: a 4B model sent one stale Edit 14 times
     # in a row. 0 switches the brake off.
@@ -278,6 +294,24 @@ class Settings:
     # is weaker evidence, and saying so is honest, but a bad name must not kill the timer.
     advisor_model: str = "critic"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
+    # Two-step compaction, step 1 (plan item 1): replace tool results older than
+    # ``prune_keep_turns`` assistant rounds with a one-line stub, before any summary is
+    # written. It costs no model call and keeps the recent turns intact; the transcript
+    # keeps the full text either way. "" chooses by endpoint: ``every_turn`` on a local
+    # box, where the fixed prompt alone can eat the whole budget, and ``over_budget``
+    # on a hosted one, where the prompt cache is worth more than the saved tokens.
+    # ``over_budget`` prunes only when compaction is already due; ``every_turn`` also
+    # prunes at the start of every user turn, whatever the budget. ``off`` never prunes.
+    prune_tool_results: str = ""  # "" = choose by endpoint | over_budget | every_turn | off
+    prune_keep_turns: int = 2  # assistant rounds whose tool results stay verbatim
+    # A result shorter than this is kept: stubbing it saves almost nothing, and a short
+    # error message is the one thing a model cannot re-fetch cheaply.
+    prune_min_chars: int = 400
+    # Who writes a compaction summary. "" = this session's model; a models.toml id or an
+    # agent_models key overrides it and falls back to the session's model with a visible
+    # warning when that name resolves to nothing, exactly like ``advisor_model``: a typo
+    # must not lose the compaction, and a cheaper model writing summaries is the point.
+    compact_model: str = ""
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
     observation_pack_limit: int = 10 * 1024
@@ -304,5 +338,10 @@ def load_settings(path: Path | None = None) -> Settings:
         raise ConfigError(
             f"settings.toml: reasoning_effort must be one of {', '.join(EFFORTS)} or empty, "
             f"got {settings.reasoning_effort!r}"
+        )
+    if settings.prune_tool_results not in ("", *PRUNE_MODES):
+        raise ConfigError(
+            f"settings.toml: prune_tool_results must be one of {', '.join(PRUNE_MODES)} "
+            f"or empty (choose by endpoint), got {settings.prune_tool_results!r}"
         )
     return settings
