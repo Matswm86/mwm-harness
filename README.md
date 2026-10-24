@@ -167,7 +167,7 @@ stdio server plays MCP, a mocked transport plays the web.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
   /commands /plan /files /open /agents /jev /postmortem /undo /hw /check /runit
-  /trace /review /review-send /review-remember /compact /init /resume /tab
+  /trace /diagnose /review /review-send /review-remember /compact /init /resume /tab
   /clear /quit`, plus one per command file and per skill.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
   stream) prints dimmed as it arrives; `/think off` hides it. Every printed
@@ -336,6 +336,23 @@ stdio server plays MCP, a mocked transport plays the web.
   line per function, goes into the system prompt of a model whose window is under
   `code_map_below` (65,536 by default), so a small local model can name the file
   worth reading instead of reading whole files; it is cut at 24,000 characters.
+- `diagnose.py`: failure diagnosis. When the check chain or a test run fails after a turn that
+  wrote files, one call turns that failure into a short report: where it points, why, and the order
+  to check in. The location is found without a model: Python traceback frames, `pytest` short-test
+  summary rows and check findings are read for their file and line, newest frame first, and only
+  positions inside this repo are kept (a standard-library frame is dropped). A critic model
+  (`diagnose_model`, defaulting to `review_model`) then reads that location plus the turn's diff and
+  answers in strict JSON with `root_cause`, `suspected_files` and up to three `guidance` steps. A
+  file the critic names that neither the failure nor the diff mentions is dropped and counted, never
+  shown as a suspect. The report goes to the next request as a meta message, and an edit to a file
+  outside the suspected list in that turn shows one notice: advice, never a block. `/diagnose` reads
+  the last failing run, `/diagnose <pasted output>` reads what you paste, and the panel's run-it
+  button diagnoses a failing suite on its own. `diagnose_rounds` (3) caps how many diagnoses one
+  task gets before the harness stops and asks you instead; `diagnose_after_fail = false` switches
+  the automatic pass off. With no critic configured it still ships the location and says the reason
+  is missing; a critic that answers nothing usable is a line in the report, not a failed turn, and a
+  headless run never calls a subscription-plan endpoint for it. Diffs that failed redaction are not
+  sent, so a diagnosis can leak a secret no more than the check chain can.
 - `undo.py`: `/undo` (the panel's "undo turn" button) puts back the files the
   newest file-changing turn wrote with `Write` or `Edit`, from a copy taken
   before each write. It keeps the last 10 turns, leaves a file alone that

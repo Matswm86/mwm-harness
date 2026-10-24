@@ -1089,6 +1089,18 @@ function reviewQueued(e) {
 function stopAll() { send({ type: "stop_all" }); }
 $("stopall").onclick = stopAll;
 $("undo").onclick = () => send({ type: "prompt", text: "/undo" });
+function diagnoseStarted(e) { setLive(true, `${e.model} reading the failed ${e.source}`); }
+function diagnoseFinished(e) {
+  const d = e.diagnosis;
+  if (d.status !== "diagnosed") { setLive(false, `diagnosis ${d.status}`); note("warn", `diagnosis ${d.status}: ${d.reason}`); return; }
+  const lines = [];
+  if (d.root_cause) lines.push(`why: ${d.root_cause}`);
+  lines.push(`where: ${d.suspected_files.length ? d.suspected_files.join(", ") : "nothing inside this repo"}`);
+  d.guidance.forEach((step, i) => lines.push(`${i + 1}. ${step}`));
+  if (!d.critic) lines.push("no critic answered: this is only where the failure points, not why");
+  setLive(false, "read the failure");
+  note("info", `failure diagnosis (${d.source}): ${lines.join(" · ")}`);
+}
 $("runit").onclick = () => { setLive(true, "running the tests under coverage"); send({ type: "prompt", text: "/runit" }); };
 $("desk").onclick = () => { setLive(true, "asking the second reader about this turn"); send({ type: "prompt", text: "/review" }); };
 function checksStarted(e) { setLive(true, `checking ${e.files.length} file${e.files.length === 1 ? "" : "s"}`); $("checksum").textContent = "running"; }
@@ -1536,6 +1548,8 @@ const handlers = {
   ChecksFinished: checksFinished,
   RunItFinished: runitFinished,
   TraceFinished: traceFinished,
+  DiagnoseStarted: diagnoseStarted,
+  DiagnoseFinished: diagnoseFinished,
   ReviewStarted: reviewStarted,
   ReviewFinished: reviewFinished,
   ReviewComment: () => {},  // the desk clicked remember: the note below is the confirmation

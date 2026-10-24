@@ -52,6 +52,8 @@ HELP = """\
 /check                compile, lint and type-check the changed files (also runs after each editing turn)
 /runit [pytest args]  run the tests under coverage: which changed lines did a test execute
 /trace TEST           run one test (pytest node id) and list the calls it made, with argument values
+/diagnose [text]      where a failing run comes from: the last failure this session saw, or TEXT
+                      (also runs after a turn whose checks or tests failed; advice, never a fix)
 /review [file ...]    a second reader on the turn's diff: a walkthrough line per file plus comments
                       with severity. Advice only, nothing is applied (also runs after an editing turn)
 /review-send N [note] send comment N of the last review as your next turn, quoting its file:line
@@ -153,6 +155,9 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
             out.line("usage: /trace <pytest node id>, e.g. /trace tests/test_a.py::test_b")
         else:
             await session.trace(argument.strip())
+        return True
+    if name == "/diagnose":
+        await session.diagnose_command(argument)
         return True
     if name == "/mcp" and "refresh" in argument.split():
         await session.connect_mcp(refresh=True)
@@ -287,8 +292,39 @@ class Printer:
         elif isinstance(event, ev.ReviewComment):
             mark = "remembered" if event.remember else "queued as your next turn"
             self.line(self.paint(DIM, f"[review] {event.file}:{event.line} {mark}"), event)
+        elif isinstance(event, ev.DiagnoseStarted):
+            self.line(
+                self.paint(DIM, f"[diagnose] {event.model} reading the failed {event.source}"),
+                event,
+            )
+        elif isinstance(event, ev.DiagnoseFinished):
+            for row in diagnosis_lines(event.diagnosis):
+                code = RED if row.startswith("[diagnose] FAILED") else DIM
+                self.line(self.paint(code, row), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
+
+
+def diagnosis_lines(diagnosis: dict[str, Any]) -> list[str]:
+    """One failure diagnosis as plain lines. It advises only: no file was opened or edited."""
+    if diagnosis["status"] != "diagnosed":
+        label = diagnosis["status"].upper()
+        return [f"[diagnose] {label}: {diagnosis['reason']}"]
+    rows = [f"[diagnose] {diagnosis['source']} failed; read by {diagnosis['model']}"]
+    if diagnosis["root_cause"]:
+        rows.append(f"  why: {diagnosis['root_cause']}")
+    if diagnosis["suspected_files"]:
+        rows.append("  suspected: " + ", ".join(diagnosis["suspected_files"]))
+    for frame in diagnosis["frames"][:3]:
+        place = frame["file"] + (f":{frame['line']}" if frame["line"] else "")
+        rows.append(f"  points at: {place} {frame['func']}".rstrip())
+    for step in diagnosis["guidance"]:
+        rows.append(f"  check: {step}")
+    if not diagnosis["critic"]:
+        rows.append("  no critic answered: this is only where the failure points, not why")
+    if diagnosis["extra_files"]:
+        rows.append(f"  dropped {diagnosis['extra_files']} file name(s) the critic invented")
+    return rows
 
 
 def runit_lines(result: dict[str, Any]) -> list[str]:

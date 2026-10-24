@@ -66,7 +66,7 @@ LIVE_EVENTS = (
 MAX_LIVE_EVENTS = 2000
 # Slash commands that run as background tasks. A review is a model call over the turn's diff,
 # so it belongs here with the checks: it can take a minute and must not block the socket reader.
-SIDE_COMMANDS = ("/check", "/runit", "/trace", "/review")
+SIDE_COMMANDS = ("/check", "/runit", "/trace", "/diagnose", "/review")
 CLOSED_TABS_KEPT = 10
 # The allow-list key an "always" answer to a code-pane save is remembered under. It is not a tool
 # name on purpose: answering "always" there must stop asking about Mats's own saves, and must not
