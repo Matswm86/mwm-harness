@@ -721,10 +721,11 @@ function setLive(on, text) { const s = $("cstate"); s.className = on ? "live" : 
 function renderFileTabs() {
   const bar = $("ftabs"); bar.replaceChildren();
   for (const [key, f] of openFiles) {
-    const b = el("button", null, (f.kind === "change" ? "Δ " : "") + baseName(f.path)); b.type = "button"; b.title = f.path;
+    const b = el("button", null, (f.kind === "change" ? "Δ " : f.dirty ? "● " : "") + baseName(f.path)); b.type = "button";
+    b.title = f.dirty ? `${f.path} (unsaved edit, Ctrl+S to save)` : f.path;
     b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(key === activeFile));
     const x = el("span", "x", "×"); x.title = "Close";
-    x.onclick = (event) => { event.stopPropagation(); openFiles.delete(key); showFile(activeFile === key ? [...openFiles.keys()].pop() || "" : activeFile); };
+    x.onclick = (event) => { event.stopPropagation(); if (f.dirty && !confirm(`${f.path} has an unsaved edit. Close it and lose that edit?`)) return; openFiles.delete(key); showFile(activeFile === key ? [...openFiles.keys()].pop() || "" : activeFile); };
     b.append(x); b.onclick = () => showFile(key); bar.append(b);
   }
 }
@@ -751,12 +752,50 @@ async function showFile(key) {
   }
   box.className = "view mon";
   monaco.editor.defineTheme("mwm", { base: "vs-dark", inherit: true, rules: [], colors: { "editor.background": "#070b14" } });
-  editor = monaco.editor.create(box, { value: f.content, language: languageOf(f.path), readOnly: true,
+  // A file from the tree is editable: Mats can fix a line himself instead of spending a turn on it.
+  // Saving goes to the server, which asks like it asks for one of the agent's own edits.
+  editor = monaco.editor.create(box, { value: f.buffer ?? f.content, language: languageOf(f.path), readOnly: false,
     automaticLayout: true, minimap: { enabled: false }, theme: "mwm", fontSize: 12, fontFamily: "JetBrains Mono, monospace", glyphMargin: true });
+  editor.onDidChangeModelContent(() => { f.buffer = editor.getValue(); markDirty(f, f.buffer !== f.content); });
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveActive);
   markFindings(f.path);
 }
+function markDirty(f, on) {
+  if (!!f.dirty === on) return;   // the tab bar is rebuilt only when the mark changes, not per keystroke
+  f.dirty = on;
+  if (!on) delete f.buffer;
+  renderFileTabs();
+  $("cnote").textContent = on ? "unsaved edit: Ctrl+S saves it, and asks first, like one of the agent's own edits"
+    : "shows Edit and Write calls as they arrive; click a file to read it";
+}
+function saveActive() {
+  const f = openFiles.get(activeFile);
+  if (!f || f.kind !== "file" || !f.dirty || !editor) return;
+  send({ type: "save", path: f.path, content: editor.getValue() });
+}
+function saveResult(e) {
+  if (!e.saved) { note("warn", `not saved: ${e.error}`); return; }
+  note("info", `saved ${e.path}`);
+  const f = openFiles.get(e.path);
+  if (!f || f.kind !== "file") return;
+  f.content = e.content;
+  const shown = activeFile === e.path && editor ? editor.getValue() : f.buffer;
+  markDirty(f, shown !== e.content);   // typing that landed after the save is still unsaved
+}
 function openFile(path) { send({ type: "open", path }); }
-function fileContent(e) { openFiles.set(e.path, { kind: "file", path: e.path, content: e.content, error: e.error }); showFile(e.path); }
+function fileContent(e) {
+  const old = openFiles.get(e.path);
+  if (old && old.kind === "file" && old.dirty && old.content !== e.content) {
+    // The file moved while Mats's edit was unsaved. Keep his buffer and say so: replacing the
+    // entry would throw away typing he has not saved, and say nothing about having done it.
+    old.content = e.content;
+    note("warn", `${e.path} changed on disk while your edit was unsaved; Ctrl+S overwrites it`);
+    if (activeFile === e.path) showFile(e.path);
+    return;
+  }
+  openFiles.set(e.path, { kind: "file", path: e.path, content: e.content, error: e.error });
+  showFile(e.path);
+}
 function setView(v) {
   view = v;
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
@@ -1516,6 +1555,7 @@ const handlers = {
   Compacted: (e) => note("info", `history compacted (${e.trigger}): ${e.messages_before} messages became one summary`),
   Tree: treeLoaded,
   FileContent: fileContent,
+  SaveResult: saveResult,
   Handoffs: drawHandoffs,
   Hardware: drawHardware,
   MemoryHits: drawMemoryHits,

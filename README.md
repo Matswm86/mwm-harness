@@ -214,15 +214,23 @@ stdio server plays MCP, a mocked transport plays the web.
   and the tabs share the MCP server processes of the first one. The last tab
   cannot be closed.
 - `preview.py` and the panel's file views: a file tree of the project, tabs of
-  open files, a list of files the tools touched, and a read-only code viewer
+  open files, a list of files the tools touched, and a code viewer
   (Monaco 0.56.0 from jsdelivr, or from the machine itself after
   `mwm --vendor-monaco`, which downloads it, three.js 0.149.0 and the three
   fonts once, checks each npm tarball against a pinned sha512 and lets the panel
   drop the CDN from its content security policy; with neither, the page falls
   back to plain text and system fonts). Before a `Write` or `Edit` is approved, its result is computed without
   touching the disk and shown as a diff in the code pane; the terminal prompt prints
-  the same change as a unified diff. Browsing answers only for paths inside the
-  project: `..`, absolute paths and symlinks that lead out are refused.
+  the same change as a unified diff. A file opened from the tree is also
+  editable: Ctrl+S saves it, and that save asks for approval the same way the
+  agent's own `Write` does, so the hard deny list and plan mode cover it and
+  `acceptEdits` skips the question as it does for the agent. Answering "always"
+  there stops the asking about your saves and does not let the agent's writes
+  through. A save is not a read, so the session's next request names the file as
+  changed on disk. An unsaved edit marks its tab, closing one asks first, and a
+  file that changes underneath an unsaved edit keeps your buffer and says so.
+  Browsing and saving answer only for paths inside
+  the project: `..`, absolute paths and symlinks that lead out are refused.
 - `agents.py`: subagents. `agents/<name>.md` files (frontmatter `name`,
   `description`, `tools`, `model`, then the agent's system prompt) load from
   `.claude/agents` (project, workspace, home). The `Task` tool runs one as a child

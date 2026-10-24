@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from mwm_harness.providers import chunks_for
-from mwm_harness.web.server import create_app
+from mwm_harness.web.server import PANEL_SAVE, create_app
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -317,3 +318,163 @@ def test_the_review_desk_reaches_the_page_and_its_buttons_answer(make_session):
     prompts = [m["content"] for m in provider.requests[-1]["messages"] if m["role"] == "user"]
     assert prompts[-1].startswith("Review comment on a.py:2 (critical,")
     assert (session.cwd / "a.py").read_text() == source  # advice only: the review wrote nothing
+
+
+# ------------------------------------------------------------- saving from the code pane
+#
+# Mats fixes a line himself in the browser. A save is a file write, so it goes through
+# permissions.decide and, in a mode that asks, through the same approval card an agent's Write
+# gets. It does not re-stamp the session, so the agent is told the file changed on disk.
+
+MARKER = "changed on disk since you last read them"
+
+
+def saved_file(session, name: str = "a.py", text: str = "x = 1\n") -> Path:
+    path = session.cwd / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_code_pane_save_asks_like_an_edit_and_tells_the_agent(make_session):
+    turns = [
+        chunks_for(tool_calls=[("Read", {"file_path": "a.py"})]),
+        chunks_for("Read it."),
+        chunks_for("Noted."),
+    ]
+    session, _, provider = make_session(turns)
+    saved_file(session)
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "prompt", "text": "read it"})
+        until(ws, "TurnEnded")
+        path = session.tool_ctx.resolve("a.py")
+        stamp = session.tool_ctx.stamps[path]
+
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 2\n"})
+        request = until(ws, "ApprovalRequest")[-1]
+        assert request["tool"] == "Write" and request["input"]["content"] == "x = 2\n"
+        assert "code pane" in request["reason"]
+        assert request["diff"]["before"] == "x = 1\n" and request["diff"]["after"] == "x = 2\n"
+        ws.send_json({"type": "approval", "id": request["id"], "answer": "yes"})
+        result = until(ws, "SaveResult")[-1]
+        assert result["saved"] is True and result["content"] == "x = 2\n"
+        assert path.read_text() == "x = 2\n"
+        # The save left the session's stamp where the read put it, and the file really did move:
+        # the reminder below fires because a save is not a read.
+        assert session.tool_ctx.stamps[path] == stamp
+        assert path.stat().st_mtime_ns != stamp
+
+        calls = len(provider.requests)
+        ws.send_json({"type": "prompt", "text": "and now"})
+        until(ws, "TurnEnded")
+    body = json.dumps(provider.requests[calls]["messages"], ensure_ascii=False)
+    assert MARKER in body and "a.py" in body
+
+
+def test_a_declined_code_pane_save_writes_nothing(make_session):
+    session, _, _ = make_session([])
+    target = saved_file(session)
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 2\n"})
+        request = until(ws, "ApprovalRequest")[-1]
+        ws.send_json({"type": "approval", "id": request["id"], "answer": "no"})
+        result = until(ws, "SaveResult")[-1]
+        assert result["saved"] is False and "nothing was written" in result["error"]
+    assert target.read_text() == "x = 1\n"
+
+
+def test_a_save_outside_the_project_is_refused_without_asking(make_session):
+    session, _, _ = make_session([])
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": "../escape.txt", "content": "x"})
+        seen = until(ws, "SaveResult")
+        assert seen[-1]["saved"] is False and "outside the project" in seen[-1]["error"]
+        assert not any(m["type"] == "ApprovalRequest" for m in seen)
+    assert not (session.cwd.parent / "escape.txt").exists()
+
+
+def test_a_save_over_key_material_is_denied_by_the_hard_list(make_session):
+    session, _, _ = make_session([])
+    saved_file(session, ".ssh/id_rsa", "original key\n")
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": ".ssh/id_rsa", "content": "attacker key\n"})
+        seen = until(ws, "SaveResult")
+        assert seen[-1]["saved"] is False and "secret-files" in seen[-1]["error"]
+        assert not any(m["type"] == "ApprovalRequest" for m in seen)
+    assert (session.cwd / ".ssh" / "id_rsa").read_text() == "original key\n"
+
+
+def test_acceptEdits_saves_without_a_prompt_and_plan_mode_refuses(make_session):
+    session, _, _ = make_session([], mode="acceptEdits")
+    target = saved_file(session)
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 3\n"})
+        seen = until(ws, "SaveResult")
+        assert seen[-1]["saved"] is True
+        assert not any(m["type"] == "ApprovalRequest" for m in seen)
+    assert target.read_text() == "x = 3\n"
+
+    planned, _, _ = make_session([], mode="plan")
+    kept = saved_file(planned)
+    with (
+        client_for(planned) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 4\n"})
+        result = until(ws, "SaveResult")[-1]
+        assert result["saved"] is False and "Plan mode" in result["error"]
+    assert kept.read_text() == "x = 1\n"
+
+
+def test_always_on_a_save_covers_saves_and_not_the_agents_writes(make_session):
+    turns = [
+        chunks_for(tool_calls=[("Write", {"file_path": "b.txt", "content": "agent"})]),
+        chunks_for("Wrote it."),
+    ]
+    session, _, _ = make_session(turns)
+    saved_file(session)
+    with (
+        client_for(session) as client,
+        client.websocket_connect(f"/ws?token={TOKEN}", headers=HOST) as ws,
+    ):
+        until(ws, "State")
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 5\n"})
+        first = until(ws, "ApprovalRequest")[-1]
+        ws.send_json({"type": "approval", "id": first["id"], "answer": "always"})
+        assert until(ws, "SaveResult")[-1]["saved"] is True
+        assert PANEL_SAVE in session.permissions.session_allow
+        assert "Write" not in session.permissions.session_allow
+
+        ws.send_json({"type": "save", "path": "a.py", "content": "x = 6\n"})
+        second = until(ws, "SaveResult")
+        assert second[-1]["saved"] is True
+        assert not any(m["type"] == "ApprovalRequest" for m in second)
+
+        ws.send_json({"type": "prompt", "text": "write b.txt"})
+        asked = until(ws, "ApprovalRequest")[-1]  # the agent's own Write still asks
+        assert asked["tool"] == "Write" and asked["input"]["file_path"] == "b.txt"
+        ws.send_json({"type": "approval", "id": asked["id"], "answer": "no"})
+        until(ws, "TurnEnded")
+    assert (session.cwd / "a.py").read_text() == "x = 6\n"
+    assert not (session.cwd / "b.txt").exists()

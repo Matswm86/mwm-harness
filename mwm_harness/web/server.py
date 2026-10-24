@@ -40,7 +40,7 @@ from mwm_harness.loop import Session
 from mwm_harness.mcp_client import McpError, McpManager
 from mwm_harness.memory_panel import MemorySearch, OutsideMemory, list_handoffs, read_memory
 from mwm_harness.mods import Mod, ModError, ModSet, fill, load_mods, tab_values, why_not
-from mwm_harness.preview import OutsideProject, list_dir, preview_change, read_file
+from mwm_harness.preview import OutsideProject, inside, list_dir, preview_change, read_file
 from mwm_harness.repl.terminal import run_async_command, run_command
 from mwm_harness.voice import Transcriber
 from mwm_harness.web.market import MarketFeed
@@ -68,6 +68,10 @@ MAX_LIVE_EVENTS = 2000
 # so it belongs here with the checks: it can take a minute and must not block the socket reader.
 SIDE_COMMANDS = ("/check", "/runit", "/trace", "/review")
 CLOSED_TABS_KEPT = 10
+# The allow-list key an "always" answer to a code-pane save is remembered under. It is not a tool
+# name on purpose: answering "always" there must stop asking about Mats's own saves, and must not
+# quietly let the agent's Write calls through for the rest of the session.
+PANEL_SAVE = "panel-save"
 
 
 def _git_commit() -> str:
@@ -325,8 +329,18 @@ class Tab:
 
     # ----------------------------------------------------------- approvals
 
-    async def ask(self, tool_name: str, tool_input: dict[str, Any], reason: str) -> bool:
-        """The ``Approver`` protocol: show a dialog in every open page and wait."""
+    async def ask(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        reason: str,
+        remember_as: str | None = None,
+    ) -> bool:
+        """The ``Approver`` protocol: show a dialog in every open page and wait.
+
+        ``remember_as`` is the key an "always" answer is remembered under; it defaults to the tool
+        name. A code-pane save passes its own key, so "always" there covers saves and nothing else.
+        """
         request_id = uuid.uuid4().hex[:12]
         request = {
             "type": "ApprovalRequest",
@@ -350,7 +364,7 @@ class Tab:
             self.broadcast({"type": "ApprovalResolved", "id": request_id})
             self.panel.broadcast(self.panel.tabs_payload())
         if answer == "always":
-            self.session.permissions.session_allow.add(tool_name)
+            self.session.permissions.session_allow.add(remember_as or tool_name)
         return answer in ("yes", "always")
 
     # ----------------------------------------------------------- page -> core
@@ -392,6 +406,10 @@ class Tab:
             )
         elif kind == "review_comment":
             self.review_action(message, reply)
+        elif kind == "save":
+            self.start_save(
+                str(message.get("path") or ""), str(message.get("content") or ""), reply
+            )
         elif kind in ("tree", "open"):
             relative = str(message.get("path") or "")
             try:
@@ -417,6 +435,84 @@ class Tab:
                         "error": "outside the project",
                     }
                 )
+
+    # -------------------------------------------------- saving from the pane
+
+    def start_save(self, relative: str, content: str, reply: asyncio.Queue[dict[str, Any]]) -> None:
+        """Run a code-pane save beside the websocket reader.
+
+        A save in a mode that asks waits for the approval answer, and that answer arrives on the
+        same socket this request came in on, so awaiting it inside ``handle`` would deadlock the
+        reader that has to deliver it.
+        """
+
+        async def guarded() -> None:
+            try:
+                await self.save_file(relative, content, reply)
+            except Exception as exc:
+                # A save that dies inside a task looks like a save button that does nothing.
+                reply.put_nowait(
+                    {
+                        "type": "SaveResult",
+                        "tab": self.id,
+                        "path": relative,
+                        "saved": False,
+                        "content": "",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        task = asyncio.create_task(guarded())
+        self._side_tasks.add(task)
+        task.add_done_callback(self._side_tasks.discard)
+
+    async def save_file(
+        self, relative: str, content: str, reply: asyncio.Queue[dict[str, Any]]
+    ) -> None:
+        """Write Mats's own edit from the code pane, with an agent Edit's approval story.
+
+        It runs through ``permissions.decide`` and, in a mode that asks, through the same approval
+        card a model's Write gets, so the hard deny list (key material, the curated inbox) and plan
+        mode cover a browser save exactly as they cover a model. The session's read stamps are
+        deliberately left alone: the file changed behind the agent's back, and the next request has
+        to say so.
+        """
+
+        def answer(error: str, saved: bool = False) -> None:
+            reply.put_nowait(
+                {
+                    "type": "SaveResult",
+                    "tab": self.id,
+                    "path": relative,
+                    "saved": saved,
+                    # Echoed so the pane can tell an edit that landed after this save from one that
+                    # is still unsaved, instead of clearing the dirty mark on a guess.
+                    "content": content if saved else "",
+                    "error": error,
+                }
+            )
+
+        if not relative:
+            return answer("no path to save")
+        try:
+            path = inside(self.session.cwd, relative)
+        except OutsideProject:
+            return answer(f"{relative} is outside the project directory")
+        tool_input = {"file_path": str(path), "content": content}
+        decision = self.session.permissions.decide("Write", tool_input, read_only=False)
+        if decision.verdict == "deny":
+            return answer(decision.reason)
+        if decision.verdict == "ask" and PANEL_SAVE not in self.session.permissions.session_allow:
+            approved = await self.ask(
+                "Write", tool_input, f"saving {relative} from the code pane", remember_as=PANEL_SAVE
+            )
+            if not approved:
+                return answer("you answered no, so nothing was written")
+        try:
+            path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            return answer(f"could not write {path}: {exc}")
+        answer("", saved=True)
 
     # ---------------------------------------------------------- review desk
 
