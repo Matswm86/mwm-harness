@@ -16,14 +16,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mwm_harness import advisor, codemap, levels
+from mwm_harness import advisor, codemap, goal, levels
 from mwm_harness import events as ev
 from mwm_harness.advisor import Advice, advice_call, run_advice
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.assurance import Card as AssuranceCard
 from mwm_harness.assurance import build_card
 from mwm_harness.bugflag import FlagReport, failed_node_ids, flag_files, n_plus_one
-from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
+from mwm_harness.checks import (
+    CheckConfigError,
+    CheckResult,
+    as_dicts,
+    exec_capped,
+    repo_root,
+    run_checks,
+)
 from mwm_harness.compaction import CompactResult, PruneResult, prune_tool_results
 from mwm_harness.config import (
     EFFORTS,
@@ -192,6 +199,11 @@ EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})  # file_path tools the check runner follows
 LOOK_TOOLS = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task"})
 
+# The goal checker (item 3) reads and judges; it has no shell, no writes and no subagents.
+GOAL_CHECKER_TOOLS = frozenset({"Read", "Grep", "Glob"})
+# Saved goal statuses a person can pick up again with /goal continue.
+GOAL_RESUMABLE = frozenset({"active", "cancelled", "brake", "checker_failed"})
+
 
 class Session:
     def __init__(
@@ -321,6 +333,10 @@ class Session:
         self._saw_test_pass = False
         self._last_runit: dict[str, Any] | None = None
         self.assurance: AssuranceCard | None = None
+        # Item 3: the goal loop bound to this session, and the pre-goal file bytes the
+        # checker's diff is measured against (the undo log hands them over per attempt).
+        self.goal: goal.GoalState | None = None
+        self._goal_before: dict[Path, bytes | None] = {}
         # Item 23: the spec this session wrote or loaded, and the test coverage read for its
         # criteria. The card checks coverage fresh each turn; this copy is what the last /spec
         # or /spec status saw, so the report can quote a number it actually measured.
@@ -477,6 +493,19 @@ class Session:
         if outcome.context:
             self._add(
                 Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
+            )
+        # A goal loop survives --resume: the state file lives in the project's session folder,
+        # so say what was left unfinished and how to pick it up. No auto-continue: resuming a
+        # session must not start spending model requests that nobody asked for in this one.
+        found = goal.load_state(goal.goal_path(self.transcript.path.parent))
+        self.goal = found
+        if found is not None and found.status in GOAL_RESUMABLE:
+            self.bus.emit(
+                ev.Notice(
+                    "info",
+                    f"unfinished goal: {found.goal[:80]!r} ({found.attempts}/{found.max_turns} "
+                    "attempts). /goal continue to run it, /goal off to drop it",
+                )
             )
 
     async def close(self, reason: str = "exit") -> None:
@@ -2254,6 +2283,382 @@ class Session:
             self.bus.emit(ev.Notice("info", f"bug flag {flag.label()}"))
         self.bus.emit(ev.TraceFinished(str(root), data))
         return result
+
+    # ------------------------------------------------------------------ goal loop
+
+    def goal_model(self) -> tuple[ModelSpec, str]:
+        """The model that judges a goal: this session's model unless ``goal_model`` names one.
+
+        Same resolution as ``spec_model``: the settings name is tried as a registry id, then as
+        an ``agent_models`` tier; an unresolvable name falls back to the session's own model
+        with a warning, because a goal nobody checks is worse than a goal checked by the lead.
+        """
+        wanted = (self.settings.goal_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"goal_model {wanted!r} is not a configured model id or an agent tier, "
+            f"so {self.model.id} checks the goal instead",
+        )
+
+    async def _goal_check(self, command: str) -> tuple[int | None, str]:
+        """Run the goal's check in the repo root through ``/bin/sh``, capped by time.
+
+        ``None`` as the exit code means the check itself timed out: a timeout is a failure,
+        never a pass. The output tail is capped to what travels to prompts and events.
+        """
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        exit_code, output = await exec_capped(
+            ["/bin/sh", "-c", command], root, self.settings.goal_check_timeout
+        )
+        if exit_code is None:
+            return None, f"the check timed out after {self.settings.goal_check_timeout:g} s"
+        return exit_code, goal.cap_text(output, goal.CHECK_TAIL_CHARS)
+
+    def _goal_merge_evidence(self, state: goal.GoalState) -> None:
+        """Fold this attempt's work into what the next checker gets to read.
+
+        File names come from the turn's write list; the pre-goal bytes come from the undo log,
+        first sight wins: a file edited again in attempt 3 is still diffed against the bytes it
+        had when the goal started, not against what attempt 2 left behind.
+        """
+        for path in self.written:
+            raw = str(path)
+            if raw not in state.written:
+                state.written.append(raw)
+        if self.undo_log.turns:
+            for path, data in self.undo_log.turns[-1].before.items():
+                self._goal_before.setdefault(path, data)
+
+    async def _goal_diff(self, state: goal.GoalState) -> str:
+        """Everything that changed since the goal started, as diff text for the checker.
+
+        Files with a recorded pre-goal image diff against it; the rest go through git, which
+        is also how a Bash-made change shows up in a git repo. A file the loop deleted cannot
+        be read, but its name still travels to the checker in the list.
+        """
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        paths: list[Path] = []
+        for raw in state.written:
+            path = Path(raw)
+            if path not in paths:
+                paths.append(path)
+        for path in await asyncio.to_thread(git_changed, root):
+            if path not in paths:
+                paths.append(path)
+        existing = [path for path in paths if path.is_file()]
+        changes = await asyncio.to_thread(collect_changes, root, existing, self._goal_before)
+        for change in changes:
+            change.diff = self._clean(change.diff)
+        changes = [c for c in changes if not c.diff.startswith("[redaction failed")]
+        return format_changes(changes)
+
+    async def _goal_verdict(
+        self, state: goal.GoalState, exit_code: int | None, tail: str
+    ) -> tuple[str, str]:
+        """One checker turn judges the passing check: returns ``(verdict, reason)``.
+
+        The child shares nothing with the worker but the provider: its own transcript and
+        context, tools filtered to reading only, and an approver that asks nobody. The worker
+        never sees this prompt; the checker never sees the worker's. Anything that keeps a
+        verdict from existing fails closed as ``checker_failed``, which ends the loop: a check
+        that passes but cannot be confirmed is not a done.
+        """
+        model, note = self.goal_model()
+        if note:
+            self.bus.emit(ev.Notice("warn", note))
+        diff_text = await self._goal_diff(state)
+        prompt = goal.checker_prompt(state, exit_code, tail, diff_text)
+        tools = {n: t for n, t in self.tools.items() if n in GOAL_CHECKER_TOOLS}
+        child_bus = ev.EventBus()
+        counted: list[str] = []
+        child_bus.subscribe(
+            lambda e: counted.append(e.name) if isinstance(e, ev.ToolStarted) else None
+        )
+        child_bus.subscribe(lambda e: self.bus.emit(e) if isinstance(e, FORWARDED) else None)
+        child = Session(
+            cwd=self.cwd,
+            model=model,
+            provider=self.provider,
+            settings=self.settings,
+            approver=ev.DenyAll(),
+            bus=child_bus,
+            hook_settings=self._hook_settings_arg,
+            sessions_dir=self._sessions_dir,
+            tools=tools,
+            system_prompt=f"{goal.CHECKER_SYSTEM}\n\n{self._environment_note(model)}",
+            skills={},
+            commands={},
+            agents={},
+            models=self.models,
+        )
+        child.hooks.registrations = [
+            r for r in child.hooks.registrations if r.event in SUBAGENT_HOOK_EVENTS
+        ]
+        child.permissions.session_allow = self.permissions.session_allow
+        child.transcript.note(
+            "goal-checker", f"session {self.transcript.session_id} attempt {state.attempts}"
+        )
+        self.bus.emit(ev.SubagentStarted("goal-checker", model.id, state.goal))
+        state.model = model.id
+        try:
+            ended = await asyncio.wait_for(child.send(prompt), goal.CHECKER_TIMEOUT)
+        except TimeoutError:
+            self.bus.emit(ev.SubagentFinished("goal-checker", "timeout", len(counted)))
+            return "checker_failed", f"the checker gave no verdict in {goal.CHECKER_TIMEOUT:.0f} s"
+        except asyncio.CancelledError:
+            self.bus.emit(ev.SubagentFinished("goal-checker", "cancelled", len(counted)))
+            raise
+        finally:
+            self.meter.total_prompt += child.meter.total_prompt
+            self.meter.total_completion += child.meter.total_completion
+            self.meter.requests += child.meter.requests
+            await child.hooks.drain()
+        self.bus.emit(ev.SubagentFinished("goal-checker", ended.reason, len(counted)))
+        if ended.reason != "done":
+            return "checker_failed", goal.cap_text(
+                f"the checker ended {ended.reason}: {ended.text}", goal.MAX_REASON_CHARS
+            )
+        verdict, reason = goal.parse_verdict(ended.text)
+        if verdict == "unreadable":
+            return "not-done", (
+                "checker verdict unreadable (first line was not DONE or NOT DONE): " + reason
+            )
+        return verdict, reason
+
+    async def goal_command(self, argument: str) -> dict[str, Any]:
+        """/goal: start a loop (item 3), continue a stopped one, read its status, or drop it."""
+        path = goal.goal_path(self.transcript.path.parent)
+        arg = (argument or "").strip()
+        if arg in {"off", "clear", "stop"}:
+            state = self.goal if self.goal is not None else goal.load_state(path)
+            goal.clear_state(path)
+            self.goal = None
+            report = {
+                "status": "off",
+                "goal": state.goal if state is not None else "",
+                "reason": "",
+            }
+            self.bus.emit(ev.GoalFinished(str(self.cwd), report))
+            return report
+        if arg == "continue":
+            state = self.goal if self.goal is not None else goal.load_state(path)
+            if state is None:
+                return {"status": "refused", "reason": f"no stored goal to continue. {goal.USAGE}"}
+            if state.status not in GOAL_RESUMABLE:
+                finished = state.status == "done"
+                return {
+                    "status": "refused",
+                    "goal": state.goal,
+                    "reason": "the stored goal is already finished"
+                    if finished
+                    else f"the stored goal is {state.status}: its caps are spent. Start a new "
+                    "one, or raise goal_max_turns first",
+                }
+            model, note = self.goal_model()
+            if note:
+                self.bus.emit(ev.Notice("warn", note))
+            state.model = model.id
+            self._goal_before = {}
+            self.goal = state
+            goal.save_state(path, state)
+            self.bus.emit(
+                ev.GoalStarted(
+                    state.goal, state.check, model.id, state.max_turns, state.baseline_exit
+                )
+            )
+            return await self._goal_drive(state, path)
+        if arg:
+            return await self._goal_start(arg, path)
+        state = self.goal if self.goal is not None else goal.load_state(path)
+        if state is None:
+            return {"status": "none", "reason": goal.USAGE}
+        return self._goal_view(state, path, state.status, "")
+
+    async def _goal_start(self, argument: str, path: Path) -> dict[str, Any]:
+        """Guards first, then the baseline run on the untouched repo (item 7), then the loop."""
+        try:
+            goal_text, check = goal.parse_command(argument)
+        except ValueError as exc:
+            return {"status": "refused", "reason": str(exc)}
+        if self.goal is not None and self.goal.status == "active":
+            return {
+                "status": "refused",
+                "goal": self.goal.goal,
+                "reason": "a goal is already running in this session: /goal off first",
+            }
+        if self.permissions.mode == "plan":
+            return {
+                "status": "refused",
+                "goal": goal_text,
+                "reason": "plan mode is on: the loop's worker turns write files, so leave plan "
+                "mode (/plan off) first",
+            }
+        if isinstance(self.approver, ev.DenyAll):
+            return {
+                "status": "refused",
+                "goal": goal_text,
+                "reason": "this run has no person to approve the loop's turns: run /goal where "
+                "you can answer the approval cards",
+            }
+        rule = self.permissions.denied("Bash", {"command": check})
+        if rule is not None:
+            return {
+                "status": "refused",
+                "goal": goal_text,
+                "reason": f"the check command matches deny rule {rule.id} ({rule.why}), and the "
+                "loop would run it unattended on every attempt",
+            }
+        model, note = self.goal_model()
+        if note:
+            self.bus.emit(ev.Notice("warn", note))
+        baseline_exit, _ = await self._goal_check(check)
+        if baseline_exit == 0:
+            return {
+                "status": "refused",
+                "goal": goal_text,
+                "reason": "the check already passes on the untouched code: it proves nothing "
+                "about any later edit (item 7). Make the check fail first, then bind the goal",
+            }
+        state = goal.GoalState(
+            goal=goal_text,
+            check=check,
+            max_turns=max(1, self.settings.goal_max_turns),
+            model=model.id,
+            baseline_exit=baseline_exit,
+            created=ev.now_stamp(),
+        )
+        self.goal = state
+        self._goal_before = {}
+        goal.save_state(path, state)
+        self.bus.emit(ev.GoalStarted(goal_text, check, model.id, state.max_turns, baseline_exit))
+        return await self._goal_drive(state, path)
+
+    async def _goal_drive(self, state: goal.GoalState, path: Path) -> dict[str, Any]:
+        """Worker turns until the check exits 0 and the checker says DONE, or a stop lands.
+
+        Every stop except done saves the state file, so a capped, braked or cancelled loop can
+        still be reported and, where resumable, continued. The spend cap counts worker and
+        checker requests alike: the checker child's meter is absorbed into the parent, exactly
+        like a Task subagent's.
+        """
+        start_requests = self.meter.requests
+        spend_limit = self.settings.goal_max_requests
+        while state.attempts < state.max_turns:
+            state.requests_spent = self.meter.requests - start_requests
+            if spend_limit and state.requests_spent >= spend_limit:
+                state.status = "spend"
+                goal.save_state(path, state)
+                return self._goal_report(
+                    state,
+                    path,
+                    "spend",
+                    f"the loop spent {state.requests_spent} model requests "
+                    f"(goal_max_requests {spend_limit})",
+                )
+            state.attempts += 1
+            state.status = "active"
+            try:
+                ended = await self.send(goal.worker_prompt(state))
+            except asyncio.CancelledError:
+                state.status = "cancelled"
+                state.requests_spent = self.meter.requests - start_requests
+                goal.save_state(path, state)
+                return self._goal_report(
+                    state, path, "cancelled", "you stopped the loop; /goal continue picks it up"
+                )
+            state.requests_spent = self.meter.requests - start_requests
+            if ended.reason == "cancelled":
+                state.status = "cancelled"
+                goal.save_state(path, state)
+                return self._goal_report(
+                    state, path, "cancelled", "you stopped the loop; /goal continue picks it up"
+                )
+            if ended.reason != "done":
+                state.status = "brake"
+                state.last_failure = ended.text or ended.reason
+                goal.save_state(path, state)
+                return self._goal_report(
+                    state,
+                    path,
+                    "brake",
+                    f"the worker turn ended {ended.reason}: {ended.text}",
+                )
+            self._goal_merge_evidence(state)
+            exit_code, tail = await self._goal_check(state.check)
+            state.requests_spent = self.meter.requests - start_requests
+            if exit_code != 0:
+                state.last_failure = tail or f"the check exited {exit_code} with no output"
+                goal.save_state(path, state)
+                self.bus.emit(
+                    ev.GoalAttempt(state.attempts, exit_code, "", state.last_failure[:200])
+                )
+                continue
+            verdict, reason = await self._goal_verdict(state, exit_code, tail)
+            state.requests_spent = self.meter.requests - start_requests
+            if verdict == "checker_failed":
+                state.status = "checker_failed"
+                state.last_failure = reason
+                goal.save_state(path, state)
+                return self._goal_report(state, path, "checker_failed", reason)
+            state.verdict = verdict
+            self.bus.emit(ev.GoalAttempt(state.attempts, exit_code, verdict, reason[:200]))
+            if verdict == "not-done":
+                state.last_failure = f"checker: {reason}"
+                goal.save_state(path, state)
+                continue
+            if (
+                self.settings.assurance_after_turn
+                and self.assurance is not None
+                and not self.assurance.done_allowed
+            ):
+                state.last_failure = "assurance holds done: " + ", ".join(self.assurance.holding)
+                goal.save_state(path, state)
+                continue
+            state.status = "done"
+            goal.clear_state(path)
+            self.goal = None
+            return self._goal_report(state, path, "done", "")
+        state.status = "capped"
+        state.requests_spent = self.meter.requests - start_requests
+        goal.save_state(path, state)
+        return self._goal_report(
+            state,
+            path,
+            "capped",
+            f"{state.max_turns} attempts spent without a DONE verdict",
+        )
+
+    def _goal_view(
+        self, state: goal.GoalState, path: Path, status: str, reason: str
+    ) -> dict[str, Any]:
+        report: dict[str, Any] = {
+            "status": status,
+            "reason": reason,
+            "goal": state.goal,
+            "check": state.check,
+            "attempts": state.attempts,
+            "max_turns": state.max_turns,
+            "requests_spent": state.requests_spent,
+            "verdict": state.verdict,
+            "model": state.model,
+            "baseline_exit": state.baseline_exit,
+            "last_failure": goal.cap_text(state.last_failure, 300),
+        }
+        if status not in {"done", "off", "none", "refused"}:
+            report["state_file"] = str(path)
+        return report
+
+    def _goal_report(
+        self, state: goal.GoalState, path: Path, status: str, reason: str
+    ) -> dict[str, Any]:
+        report = self._goal_view(state, path, status, reason)
+        self.bus.emit(ev.GoalFinished(str(self.cwd), report))
+        return report
 
     async def _approve(self, name: str, tool_input: dict[str, Any], reason: str) -> bool:
         request = await self.hooks.run("PermissionRequest", tool_name=name, tool_input=tool_input)
