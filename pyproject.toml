@@ -32,3 +32,7 @@ mwm_harness = ["web/static/*", "playbooks/*/SKILL.md", "builtin_agents/*.md", "m
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/test_hardware.py imports `tests.test_panel`, so the repo root must be importable.
+# Without this line the README's `.venv/bin/pytest -q` fails collection; only `python -m pytest`
+# (which prepends the cwd) works.
+pythonpath = ["."]
