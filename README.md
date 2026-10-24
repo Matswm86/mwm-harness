@@ -79,6 +79,9 @@ stdio server plays MCP, a mocked transport plays the web.
   content blocks (`text`, `tool_use`, `tool_result`), one JSON object per line.
   Conversion to the OpenAI wire format happens only for the outgoing request.
   `--resume` rebuilds a session from that file and repairs unanswered tool calls.
+  Each message written to the file is stamped with its position and a hash of its
+  content, which is what lets the request log below name a stored message instead of
+  repeating it.
 - `providers.py`, `streaming.py`: streaming client for any OpenAI-compatible
   `/chat/completions` endpoint; tool-call fragments are reassembled by index.
 - `loop.py`: the turn state machine. Cancel keeps the partial answer and kills
@@ -278,6 +281,26 @@ stdio server plays MCP, a mocked transport plays the web.
   carry its first and last 512 characters and the path of a scratch file with
   the exact text, which the model reads back with `Read`. The history and the
   transcript keep the full text. `observation_pack_limit = 0` switches it off.
+- `request_log.py`, the request log (`log_requests`, on by default): every model
+  request also goes into the session file as one `request` line, holding the model
+  spec, the system prompt, the message list as sent (after the ObservationPack and
+  any pruning stubs), the tool list, the effort and the hash of the body the provider
+  will build, so a request can be rebuilt from the file alone. Parts that repeat are
+  stored once per session as `request-blob` lines keyed by content hash, and a
+  message that is already in the file is named by its position, so a request line
+  stays small: at the real prompt size (20,857 characters, 12 tools) four requests
+  grew the file from 35,769 to 69,411 bytes, where the four blobs measure 31,899
+  bytes and the four request lines 2,402 (the largest 650), and every later request
+  adds its own line and nothing else. A message whose sent text differs from the
+  stored one (a packed result, a pruned stub) is one small override beside its
+  position, and a message that never entered the history (the changed-on-disk
+  reminder, the compaction ask) is stored as its own blob. `verify_requests = true`
+  rebuilds the last request and compares it with the recorded body hash; a mismatch
+  warns once and writes a `request-verify` note. Two limits: the single-shot critic
+  calls (Review Desk, advisor, diagnose) are not logged, only turn requests and the
+  compaction summary request; and image bytes are read when the request is built, so
+  a request carrying an image rebuilds identically only while that image file is
+  unchanged.
 - Plan mode (`/plan`, `--mode plan`): only reading tools run; the model hands in
   its plan with `ExitPlanMode`, and your yes returns to the mode you came from.
 - `spike/panel_demo.py`: the panel with a scripted model, for a look without a key.
@@ -478,7 +501,8 @@ Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
 permission mode, sandbox, `sandbox_tasks_max`, `sandbox_memory_max_mb`,
 `sandbox_file_max_mb`, `sandbox_tmpfs_max_mb`, `session_write_cap_mb`,
 extra writable and readable paths, `bash_env_keep`,
-`max_requests_per_turn`, `rules_prompt`, `prune_tool_results`, `prune_keep_turns`,
+`max_requests_per_turn`, `rules_prompt`, `log_requests`, `verify_requests`,
+`prune_tool_results`, `prune_keep_turns`,
 `prune_min_chars`, `compact_model`, `goal_max_turns`, `goal_max_requests`, `goal_check_timeout`,
 `goal_model`, hook settings files, `mcp_allow`, `mcp_files`,
 `skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
