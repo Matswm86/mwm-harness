@@ -294,6 +294,29 @@ class Settings:
     # session's own model with a visible warning: an advisor reading the same model's own work
     # is weaker evidence, and saying so is honest, but a bad name must not kill the timer.
     advisor_model: str = "critic"
+    # Session-end lessons (plan item 5): OFF in code, ON in this workspace's settings.toml.
+    # One cheap model reads a bounded digest at session end and APPENDS at most 3 candidate
+    # lines to a review file. It is a queue, not a rule: the code never edits QWEN.md, never
+    # writes under memory/ and never touches a skill, the same approval-first rule brain
+    # ingestion follows. Off in the default because a session end is where every test suite
+    # and every scripted demo sits, and a side call must not consume their scripted turns.
+    lessons_at_session_end: bool = False
+    # A models.toml id or an agent_models key. The default is the metered-free Groq lane,
+    # which is script-permitted; the Token Plan entries are not, and an automatic hook that
+    # fires on its own is a non-interactive call. Measured 2026-10-24: qwen/qwen3.8-27b takes
+    # at most 7,000 INPUT tokens per minute (HTTP 413 on ITPM), so the digest is capped at
+    # lessons.py MAX_DIGEST_CHARS instead of being sent whole. "" falls back to this session's
+    # model with a visible warning, like ``advisor_model``.
+    lessons_model: str = "qwen/qwen3.8-27b"
+    # Sessions shorter than this many tool calls are skipped: a 3-call question has no lesson
+    # in it, and the call is not free.
+    lessons_min_calls: int = 8
+    # One pass gets this many seconds before it is recorded as a failure. Session end waits
+    # for it, so a long timeout is a slow exit.
+    lessons_timeout: float = 90.0
+    # Where candidates land, relative to the workspace root. Deliberately NOT under memory/
+    # and not notes/inbox, which is curated by hand.
+    lessons_file: str = "data/lessons/LESSONS.md"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Two-step compaction, step 1 (plan item 1): replace tool results older than
     # ``prune_keep_turns`` assistant rounds with a one-line stub, before any summary is

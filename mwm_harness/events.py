@@ -268,6 +268,18 @@ class AssuranceFinished(Event):
 
 
 @dataclass
+class LessonsFinished(Event):
+    """Item 5: the session-end lessons pass wrote candidate lines to the review file.
+
+    ``result["status"]`` is recorded, quiet, skipped or failed, and a skip or failure always
+    carries ``reason``: a lessons pass that silently did nothing would look exactly like one
+    that found nothing to say. Candidates only: nothing became a rule because of this event.
+    """
+
+    result: dict[str, Any]
+
+
+@dataclass
 class SpecStarted(Event):
     """Item 23: one draft call for one step of the spec walk.
 

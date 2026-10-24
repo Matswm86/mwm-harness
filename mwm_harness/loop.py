@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mwm_harness import advisor, codemap, goal, levels
+from mwm_harness import advisor, codemap, goal, lessons, levels
 from mwm_harness import events as ev
 from mwm_harness.advisor import Advice, advice_call, run_advice
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
@@ -357,6 +357,16 @@ class Session:
         self._calls_since_advice = 0
         self.advice: Advice | None = None  # the newest advisor pass, note and cost included
         self.advise_totals = {"notes": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        # Item 5: one counter per lessons pass, so the meter can say what session-end cost.
+        self.lessons_totals = {
+            "calls": 0,
+            "recorded": 0,
+            "quiet": 0,
+            "skipped": 0,
+            "failed": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
         self.tool_ctx.assurance_handler = self.assurance_report
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
@@ -522,8 +532,102 @@ class Session:
         outcome = await self.hooks.run("SessionEnd", reason=reason)
         self._report(outcome, "SessionEnd")
         await self.hooks.drain()
+        if self.settings.lessons_at_session_end:
+            # Item 5. After the Review Desk and the hooks have had their say, because a
+            # lessons pass reads the finished session and must not race an editing turn.
+            await self.run_lessons_pass()
         if self.mcp is not None:
             await self.mcp.close()
+
+    # ------------------------------------------------------------- lessons (item 5)
+
+    def lessons_spec(self) -> tuple[ModelSpec, str]:
+        """The lessons model: ``lessons_model`` as a registry id or an ``agent_models`` key.
+
+        An unresolvable name falls back to this session's model with a warning, like
+        ``advisor_spec``: a typo must not lose the capture, and a lead model writing its own
+        lessons is weaker evidence that the warning names.
+        """
+        wanted = (self.settings.lessons_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"the lessons model {wanted!r} is not configured; "
+            f"this session's model ({self.model.id}) writes the candidates instead",
+        )
+
+    async def run_lessons_pass(self) -> lessons.Lessons | None:
+        """One candidate-lesson pass at session end. Writes a review file, nothing else.
+
+        Never raises and never gates anything: a session that cannot ask still ends. A
+        headless ``mwm -p`` turn is skipped, because that path is the gate scripts and the
+        audit runs, and each of them writing a candidate line would bury the queue under
+        machine traffic. Candidates only: this code path edits no rule, no memory file and
+        no skill, the same approval-first limit brain ingestion has.
+        """
+        spec, warn = self.lessons_spec()
+        if warn:
+            self.bus.emit(ev.Notice("warn", warn))
+
+        def emit(result: lessons.Lessons) -> lessons.Lessons:
+            self.lessons_totals["calls"] += 1
+            self.lessons_totals["prompt_tokens"] += result.prompt_tokens
+            self.lessons_totals["completion_tokens"] += result.completion_tokens
+            self.lessons_totals[result.status] += 1
+            self.bus.emit(ev.LessonsFinished(result.as_dict()))
+            if result.status == "failed":
+                self.bus.emit(ev.Notice("warn", f"lessons not written: {result.reason}"[:300]))
+            return result
+
+        if isinstance(self.approver, ev.DenyAll):
+            return emit(
+                lessons.Lessons(
+                    model=spec.id,
+                    status="skipped",
+                    reason=(
+                        "a headless run writes no candidate lesson: this path is the gate "
+                        "scripts and the audits. Run it from an interactive session"
+                    ),
+                    path=str(self.lessons_file()),
+                    calls=lessons.tool_call_count(self.messages),
+                )
+            )
+        path = self.lessons_file()
+
+        async def caller(system: str, user: str) -> tuple[str, dict[str, Any]]:
+            return await lessons.call_model(self.provider, spec, system, user)
+
+        try:
+            result = await lessons.run_lessons(
+                self.messages,
+                self.transcript.session_id,
+                caller,
+                spec.id,
+                path,
+                min_calls=self.settings.lessons_min_calls,
+                timeout=self.settings.lessons_timeout,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - session end must finish even if lessons break
+            return emit(
+                lessons.Lessons(
+                    model=spec.id,
+                    status="failed",
+                    reason=f"the lessons pass broke in the harness ({type(exc).__name__}: {exc})"[
+                        :300
+                    ],
+                    path=str(path),
+                )
+            )
+        return emit(result)
+
+    def lessons_file(self) -> Path:
+        return lessons.lessons_path(self.settings.lessons_file or None)
 
     # ------------------------------------------------------------- compaction
 
