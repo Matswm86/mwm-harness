@@ -248,10 +248,21 @@ stdio server plays MCP, a mocked transport plays the web.
   `agent_models` in `settings.toml` maps a file's `model:` word to a configured
   model (`opus = "qwen3.8-max"`); an unmapped word runs on the parent's model and
   says so. Stopping the parent turn stops the agent and kills its command.
-- Compaction: at the model's soft budget (or on `/compact [focus]`) the model
-  writes a summary that replaces the history; the `PostCompact` hooks fire with
-  the summary; `--resume` starts from the last summary. A failed summary keeps
-  the history. `auto_compact = false` switches the automatic part off.
+- Compaction, two steps. Step 1 is deterministic and costs no request: a tool result
+  older than the recent window is replaced in the live history by one line naming the
+  call, its size and how to get it back (a `Read` of the scratch archive for a large
+  result, otherwise re-run the call). Anything under `prune_min_chars` (400) keeps its
+  text, because a short error is the one thing a model cannot re-fetch cheaply, and
+  images drop on age alone. Step 2, the summary, runs only when step 1 left the prompt
+  over the soft budget: the model writes a summary that replaces the history, the
+  `PostCompact` hooks fire with it, and `--resume` starts from the last summary. A
+  failed summary keeps the history. `prune_tool_results` picks step 1: `off`,
+  `over_budget` (only inside compaction) or `every_turn` (also at the start of every
+  turn); empty means `every_turn` on a local endpoint and `over_budget` elsewhere.
+  `compact_model` names a cheaper model for step 2; an unknown name warns and the
+  session's own model writes the summary. `auto_compact = false` switches the automatic
+  part off, step 1 included. Neither step touches the transcript: it keeps every full
+  result, so `--resume`, the Stop gates and an audit still see what the tools returned.
 - Large tool results (ObservationPack, from SoL-Pi, arXiv 2609.20519): a result
   over 10 KiB goes to the model in full on the next two requests; later requests
   carry its first and last 512 characters and the path of a scratch file with
@@ -284,7 +295,7 @@ stdio server plays MCP, a mocked transport plays the web.
   model or on Jev is logged and retried on Cloudflare's Clef (Workers AI) when
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set (a failed local call
   with no Clef goes to Jev); a caller can also ask for Clef by name.
-- Loop guards found by the first live runs: a turn ends after 60 model requests
+- Loop guards found by the first live runs: a turn ends after 120 model requests
   (`max_requests_per_turn`); compaction keeps the prompt size right after a
   summary as a floor and waits for half a budget of growth, because a prompt
   whose fixed part is over the budget used to compact after every tool call; an

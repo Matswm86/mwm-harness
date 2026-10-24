@@ -1759,6 +1759,7 @@ const handlers = {
   SubagentStarted: (e) => { agents.set(e.agent, { state: "working", note: e.model }); note("info", `agent ${e.agent} started on ${e.model}`); drawAgents(); },
   SubagentFinished: (e) => { agents.set(e.agent, { state: "done", note: `${e.reason} · ${e.tool_calls} calls` }); note("info", `agent ${e.agent} ${e.reason}, ${e.tool_calls} tool calls`); drawAgents(); },
   Compacted: (e) => note("info", `history compacted (${e.trigger}): ${e.messages_before} messages became one summary`),
+  ToolResultsPruned: (e) => note("info", `old tool output pruned (${e.trigger}): ${e.stubbed} result(s) became one line each, ~${e.tokens_saved.toLocaleString()} tokens saved, no model call`),
   Tree: treeLoaded,
   FileContent: fileContent,
   SaveResult: saveResult,

@@ -24,11 +24,13 @@ from mwm_harness.assurance import Card as AssuranceCard
 from mwm_harness.assurance import build_card
 from mwm_harness.bugflag import FlagReport, failed_node_ids, flag_files, n_plus_one
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
+from mwm_harness.compaction import CompactResult, PruneResult, prune_tool_results
 from mwm_harness.config import (
     EFFORTS,
     ModelSpec,
     Settings,
     config_dir,
+    is_local_endpoint,
     is_subscription_endpoint,
     workspace_root,
 )
@@ -486,29 +488,110 @@ class Session:
 
     # ------------------------------------------------------------- compaction
 
-    async def compact(self, trigger: str = "manual", instructions: str = "") -> str:
-        """Replace the history with a summary written by the model. Returns the summary."""
+    def prune_mode(self) -> str:
+        """Which step 1 runs: ``off``, ``over_budget`` or ``every_turn``.
+
+        An empty setting chooses by endpoint. A local model's fixed prompt can already
+        be over its whole budget, so its history has to stay lean whatever the meter
+        says; a hosted model gains more from a byte-stable prompt prefix than the tokens
+        a stub saves, so it prunes only when compaction is due anyway.
+        """
+        wanted = self.settings.prune_tool_results
+        if wanted:
+            return wanted
+        return "every_turn" if is_local_endpoint(self.model.base_url) else "over_budget"
+
+    def _prune_old_results(self, trigger: str) -> PruneResult:
+        """Step 1: stub tool results older than the recent window. Calls no model."""
+        result = prune_tool_results(
+            self.messages,
+            keep_turns=self.settings.prune_keep_turns,
+            min_chars=self.settings.prune_min_chars,
+            scratch=self.tool_ctx.scratch,
+            pack_limit=self.settings.observation_pack_limit,
+        )
+        if not result.changed:
+            return result
+        self.messages = result.messages
+        for error in result.archive_errors:
+            self.bus.emit(ev.Notice("warn", f"pruned result could not be archived: {error}"))
+        self.transcript.note(
+            "prune_boundary", result.line(), trigger=trigger, stubbed=result.stubbed
+        )
+        self.bus.emit(
+            ev.ToolResultsPruned(trigger, result.stubbed, result.chars_saved, result.tokens_saved)
+        )
+        return result
+
+    def compact_spec(self) -> tuple[ModelSpec, str]:
+        """The model that writes summaries: ``compact_model`` as a registry id or an
+        ``agent_models`` key.
+
+        An unresolvable name falls back to this session's model with a warning, like the
+        advisor and the Review Desk: a typo must not cost the compaction, and a summary
+        written by the lead model is a weaker result that has to be named, not hidden.
+        """
+        wanted = (self.settings.compact_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"the compaction model {wanted!r} is not configured; "
+            f"this session's model ({self.model.id}) writes the summary instead",
+        )
+
+    async def compact(self, trigger: str = "manual", instructions: str = "") -> CompactResult:
+        """Two-step compaction (plan item 1).
+
+        Step 1 is deterministic: tool output older than the recent window becomes a
+        one-line stub, costing no request and losing nothing the model cannot re-fetch.
+        Step 2, today's model summary, runs only when step 1 did not bring the prompt
+        under the soft budget, or when the person asked for a summary by hand. Neither
+        step touches the transcript: it keeps every full result, so ``--resume``, the
+        Stop gates and an audit still see what the tools returned.
+        """
         if not self.messages:
-            return ""
+            return CompactResult()
+        pruned = 0
+        saved = 0
+        if trigger != "manual" and self.prune_mode() != "off":
+            # A manual /compact asks for a summary of the whole conversation, so it gets
+            # the full history, stubs and all: pruning first would only make the summary
+            # cheaper, not better.
+            result = self._prune_old_results(trigger)
+            pruned, saved = result.stubbed, result.tokens_saved
+            if result.changed and self.meter.used - saved < self.meter.soft_budget:
+                return CompactResult(pruned=pruned, tokens_saved=saved)
+        spec, fallback = self.compact_spec()
+        if fallback:
+            self.bus.emit(ev.Notice("warn", fallback))
         ask = COMPACT_PROMPT + (f"\n\nExtra instructions: {instructions}" if instructions else "")
         assembler = StreamAssembler()
         try:
             request = [*self.messages, Message("user", ask)]
             async for chunk in self.provider.stream(
-                self.model, self.system_prompt, request, [], self.effort
+                spec, self.system_prompt, request, [], self.effort
             ):
                 assembler.feed(chunk)
         except ProviderError as exc:
             self.bus.emit(ev.Notice("error", f"compaction failed, history kept: {exc}"))
-            return ""
+            return CompactResult(pruned=pruned, tokens_saved=saved, failed=True)
         turn = assembler.finish()
         summary = turn.text.strip()
         if not summary:
             self.bus.emit(ev.Notice("error", "compaction failed, history kept: empty summary"))
-            return ""
+            return CompactResult(pruned=pruned, tokens_saved=saved, failed=True)
         self.meter.record(turn.usage)
         before = len(self.messages)
-        self.transcript.note("compact_boundary", f"{before} messages summarised", trigger=trigger)
+        self.transcript.note(
+            "compact_boundary",
+            f"{before} messages summarised"
+            + (f", {pruned} results pruned first" if pruned else ""),
+            trigger=trigger,
+        )
         self.messages = []
         self._add(
             Message(
@@ -528,7 +611,7 @@ class Session:
             self._add(
                 Message("user", reminder(self._clean("\n\n".join(outcome.context))), is_meta=True)
             )
-        return summary
+        return CompactResult(summary=summary, pruned=pruned, tokens_saved=saved)
 
     # -------------------------------------------------------------- subagents
 
@@ -682,6 +765,12 @@ class Session:
             self._add(Message("user", reminder(PLAN_MODE_NOTE), is_meta=True))
         self._add(Message("user", prompt))
 
+        if self.prune_mode() == "every_turn":
+            # A local model's fixed prompt can already sit over its whole budget, so this
+            # history trim runs whatever the meter says. The new prompt is the freshest
+            # message, so it is never the one stubbed.
+            self._prune_old_results("turn")
+
         stop_blocks = 0
         requests = 0
         self._last_call: tuple[str, str] | None = None
@@ -721,7 +810,8 @@ class Session:
                 self.bus.emit(
                     ev.Notice("info", f"soft budget reached, compacting: {self.meter.line()}")
                 )
-                if await self.compact("auto"):
+                result = await self.compact("auto")
+                if result.summary:
                     self._add(
                         Message(
                             "user",
@@ -729,7 +819,19 @@ class Session:
                             is_meta=True,
                         )
                     )
-                else:
+                elif not result.pruned:
+                    # Nothing was summarised and nothing was pruned, so the budget is
+                    # still where it was. Say so once, then leave this turn alone:
+                    # retrying on every request is what the 09-20 floor guard exists
+                    # to stop, and a prune needs no note because the history is intact.
+                    if result.failed:
+                        self.bus.emit(
+                            ev.Notice(
+                                "warn",
+                                "compaction wrote no summary and pruned nothing: the history "
+                                "stays over budget until the next /compact",
+                            )
+                        )
                     self.meter.prompt_tokens = 0  # do not retry on every request of this turn
             assembler = StreamAssembler()
             try:

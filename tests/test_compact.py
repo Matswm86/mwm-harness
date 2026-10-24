@@ -124,7 +124,8 @@ def test_auto_compact_can_be_switched_off(make_session):
 def test_a_failed_summary_keeps_the_history(make_session):
     session, recorder, _ = make_session([chunks_for("answer"), chunks_for("")])
     run(session.send("q"))
-    assert run(session.compact()) == ""
+    result = run(session.compact())
+    assert result.summary == "" and result.failed and not result.pruned
     assert len(session.messages) == 2
     assert "history kept" in recorder.of(ev.Notice)[-1].text
 

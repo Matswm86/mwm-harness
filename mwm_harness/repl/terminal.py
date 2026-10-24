@@ -138,9 +138,17 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
     name, _, argument = text.partition(" ")
     if name == "/compact":
         before = len(session.messages)
-        summary = await session.compact("manual", argument.strip())
-        if summary:
-            out.line(f"compacted {before} messages into a summary of {len(summary):,} characters")
+        result = await session.compact("manual", argument.strip())
+        if result.summary:
+            out.line(
+                f"compacted {before} messages into a summary of {len(result.summary):,} characters"
+                + (f" ({result.pruned} old results pruned first)" if result.pruned else "")
+            )
+        elif result.pruned:
+            out.line(
+                f"pruned {result.pruned} old tool results, ~{result.tokens_saved:,} tokens "
+                "(estimate, no model call)"
+            )
         elif not before:
             out.line("nothing to compact")
         return True
