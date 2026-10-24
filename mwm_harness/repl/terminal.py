@@ -20,6 +20,7 @@ from mwm_harness import hardware, postmortem
 from mwm_harness.assurance import card_from_dict
 from mwm_harness.config import EFFORTS, ModelSpec
 from mwm_harness.jev import format_report, report
+from mwm_harness.levels import DEFAULT_LEVEL, LEVELS, level_or_default, parse_level, pick
 from mwm_harness.loop import Session
 from mwm_harness.permissions import MODES
 from mwm_harness.preview import OutsideProject, preview_change, read_file
@@ -35,6 +36,9 @@ HELP = """\
 /mode [name]          show or set the permission mode (default, acceptEdits, bypassPermissions, plan)
 /effort [level]       show or set reasoning effort (low, medium, high, xhigh, max); qwen3.8 family only
 /think [on|off]       show or hide the model's thinking (dimmed)
+/level [beginner|engineer]  how the review desk is drawn, both from the same turn's data:
+                      beginner = what it does, what could break, how to check it yourself;
+                      engineer = the raw diff, callers, checks, coverage, trace. Redraws, never re-runs
 /plan [off]           plan mode: reading tools only until you approve a plan; shows the last plan
 /permissions          mode, sandbox state and the hard deny list
 /tasks                the current task list
@@ -207,6 +211,11 @@ class Printer:
     def __init__(self, color: bool) -> None:
         self.color = color
         self.show_thinking = True
+        # Item 25: how the review desk is drawn. Both plans arrive on one event, so this only
+        # picks which one to print; the newest payload is kept so /level can redraw it at the
+        # other level without asking the model or the checks to run again.
+        self.reading_level = DEFAULT_LEVEL
+        self.last_review: dict[str, Any] | None = None
         self._mid_line = False
         self._thinking = False
         self._answering = False  # inside a stamped answer block
@@ -214,6 +223,30 @@ class Printer:
 
     def paint(self, code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if self.color else text
+
+    def review_rows(self, review: dict[str, Any]) -> list[str]:
+        """Item 25: the review rendered at the level this printer is set to.
+
+        Both plans ride on the same event payload, so changing level re-renders bytes that are
+        already here: no second review, no model call, no check. A payload carrying no plans (a
+        transcript written before item 25) draws the engineer view, which is what it always drew.
+        """
+        if self.reading_level == "beginner":
+            plan = pick(review, "beginner")
+            if plan is not None:
+                return beginner_lines(plan)
+        return review_lines(review)
+
+    def draw_review(self, review: dict[str, Any], event: ev.Event | None = None) -> None:
+        """Print the review at the current level, colouring the rows that name a problem."""
+        for row in self.review_rows(review):
+            if "[critical]" in row or "FAILED" in row:
+                code = RED
+            elif "[suggestion]" in row:
+                code = YELLOW
+            else:
+                code = DIM
+            self.line(self.paint(code, row), event)
 
     def stamp(self, event: ev.Event | None = None) -> str:
         """Local wall-clock time of the event (now when there is none), as a dim prefix."""
@@ -318,14 +351,8 @@ class Printer:
                 event,
             )
         elif isinstance(event, ev.ReviewFinished):
-            for row in review_lines(event.review):
-                if "[critical]" in row or "FAILED" in row:
-                    code = RED
-                elif "[suggestion]" in row:
-                    code = YELLOW
-                else:
-                    code = DIM
-                self.line(self.paint(code, row), event)
+            self.last_review = event.review
+            self.draw_review(event.review, event)
         elif isinstance(event, ev.ReviewComment):
             mark = "remembered" if event.remember else "queued as your next turn"
             self.line(self.paint(DIM, f"[review] {event.file}:{event.line} {mark}"), event)
@@ -460,6 +487,33 @@ def trace_lines(result: dict[str, Any]) -> list[str]:
         )
     if result["skipped"]:
         rows.append(f"  … {result['skipped']} deeper or later call(s) not shown")
+    return rows
+
+
+def beginner_lines(plan: dict[str, Any]) -> list[str]:
+    """Item 25: the Beginner plan as terminal lines: three answers per file, no raw diff.
+
+    Every word here was already derived from this turn's data by :mod:`mwm_harness.levels`; this
+    function only lays it out, so the terminal and the panel read the same three lines per file.
+    """
+    files = plan.get("files") or ()
+    rows = [f"[review] {plan.get('headline') or 'the review desk read this turn'}"]
+    rows.append(
+        f"  reading as a beginner: {len(files)} file(s), the diffs are folded. "
+        "What each file does, what could break, how to check it yourself"
+    )
+    for change in files:
+        rows.append(f"  {change.get('path')}")
+        rows.append(f"    does: {change.get('does')}")
+        rows.append("    could break:")
+        rows.extend(f"      - {line}" for line in change.get("breaks") or ())
+        rows.append("    check it yourself:")
+        rows.extend(f"      - {line}" for line in change.get("check") or ())
+    for note in plan.get("notes") or ():
+        rows.append(f"  {note}")
+    rows.append(
+        "  advice only, nothing applied. /level engineer shows the raw diff, the checks and the trace"
+    )
     return rows
 
 
@@ -649,6 +703,21 @@ def run_command(
         elif argument:
             out.line("usage: /think [on|off]")
         out.line(f"thinking display: {'on' if out.show_thinking else 'off'}")
+    elif name == "/level":
+        # Item 25: a view switch, not a new review. Both plans already rode on the last
+        # ReviewFinished event, so this redraws bytes that are in this session's memory.
+        value = argument.strip().lower()
+        if value and value not in LEVELS:
+            chosen, why = parse_level(value)
+            if why:
+                out.line(why)
+            out.reading_level = chosen
+        elif value:
+            out.reading_level = value
+        out.line(f"reading level: {out.reading_level}")
+        if out.last_review is not None:
+            out.line("the last review drawn again at this level, from the same turn's event:")
+            out.draw_review(out.last_review)
     elif name == "/plan":
         if argument == "off":
             session.set_mode("default")
@@ -812,6 +881,9 @@ class Tabs:
 
 async def repl(session: Session, models: dict[str, ModelSpec]) -> None:
     out = Printer(color=sys.stdout.isatty())
+    # Item 25: settings.reading_level is the default arrangement; /level switches it from here on.
+    # An unknown value keeps engineer, and the loop says so once at the first review.
+    out.reading_level = level_or_default(session.settings.reading_level)
     session.bus.subscribe(out)
     await session.start()
     sandbox = "on" if session.tool_ctx.sandbox.enabled else "OFF"

@@ -292,6 +292,22 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
 .review .cmt.critical button.go{border-color:var(--alert);color:var(--alert)}
 .review .cmt .tag{flex:none;margin-top:1px}
 .review .foot{font:10.5px/1.6 var(--mono);color:var(--faint);max-width:80ch}
+/* item 25: two reading levels over the same payload, switched per tab, never a re-run */
+.review .level{display:flex;gap:8px;align-items:center;margin-left:auto;text-transform:none;letter-spacing:0}
+.review .level button{all:unset;cursor:pointer;font:10.5px var(--mono);padding:2px 8px;border:1px solid var(--line);border-radius:4px;color:var(--muted)}
+.review .level button:hover,.review .level button:focus-visible{color:var(--text);border-color:var(--line-hi)}
+.review .level button[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan)}
+.review .level small{font:10px var(--mono);color:var(--faint)}
+.review .answers{padding:7px 10px;display:grid;gap:6px;border-bottom:1px solid var(--line)}
+.review .answers dt{font:500 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.review .answers dd{margin:0;font:12.5px/1.5 var(--display);color:var(--muted)}
+.review .answers dd.bad{color:var(--alert)}
+.review .answers dd.warn{color:var(--gold)}
+.review .answers dd ul{margin:0;padding-left:16px;display:grid;gap:3px}
+.review .answers li.bad{color:var(--alert)}
+.review .answers li.warn{color:var(--gold)}
+.review .showdiff{align-self:start;all:unset;cursor:pointer;font:10.5px var(--mono);padding:2px 8px;border:1px solid var(--line);border-radius:4px;color:var(--muted)}
+.review .showdiff:hover,.review .showdiff:focus-visible{color:var(--text);border-color:var(--line-hi)}
 #vreview .n{margin-left:5px;padding:0 4px;border-radius:6px;background:var(--gold);color:#0a0d14;font:600 9.5px var(--mono)}
 
 /* ---------- right: chart strip over the workbench ---------- */
@@ -987,6 +1003,66 @@ function traceFinished(e) {
 
 /* ---------------- review desk: a second reader over this turn's diff ---------------- */
 const reviewsByTab = new Map();  // tab id -> the review dict of its last reviewed turn
+const levelByTab = new Map();    // tab id -> "beginner" | "engineer" (item 25: a view, never new work)
+const LEVELS = ["beginner", "engineer"];
+// Which plan this tab is reading: the tab's own switch wins, then the same tab's stored choice
+// from an earlier page load, then the level the harness said this turn. Never a model, never a re-run.
+function levelOf(r) {
+  const want = levelByTab.get(session) || stored("level-" + session) || (r && r.reading_level) || "engineer";
+  return LEVELS.includes(want) ? want : "engineer";
+}
+function readPlan(r) { const v = r && r.views; return v && v[levelOf(r)] ? v[levelOf(r)] : null; }
+function setLevel(level) { levelByTab.set(session, level); store("level-" + session, level); drawReview(); }
+function levelSwitch(r) {
+  const wrap = el("span", "level");
+  if (!r.views) { wrap.append(el("small", null, "no reading levels in this review")); return wrap; }
+  [["beginner", "Beginner", "What each file does, what could break, how to check it yourself. Diffs folded."],
+   ["engineer", "Engineer", "The raw diff, the caller map, the check chain, coverage and the trace."]
+  ].forEach(([key, label, hint]) => {
+    const b = el("button", null, label); b.type = "button";
+    b.setAttribute("aria-pressed", String(levelOf(r) === key));
+    b.title = hint + " Same turn's data: switching renders, it runs nothing.";
+    b.onclick = () => setLevel(key);
+    wrap.append(b);
+  });
+  wrap.append(el("small", null, "view only"));
+  return wrap;
+}
+const toneOf = (line) => (/FAIL|the reviewer calls this a problem|no test naming them/.test(line) ? "bad"
+  : /watched code|never touched|did not run|longer than shown|nothing in the repo calls/.test(line) ? "warn" : "");
+function answerList(rows) {
+  const ul = el("ul");
+  (rows || []).forEach((line) => ul.append(el("li", toneOf(line), line)));
+  return ul;
+}
+function beginnerFile(r, row) {
+  const raw = (r.files || []).find((f) => f.path === row.path) || { path: row.path, diff: "", added: 0, removed: 0 };
+  const card = el("section", "file");
+  const head = el("header");
+  const name = el("b", null, row.path); name.tabIndex = 0; name.title = "Open this file in the code view";
+  name.onclick = () => { pendingReveal = { path: `${r.root}/${row.path}`, line: 1 }; openFile(relOf(`${r.root}/${row.path}`)); };
+  name.onkeydown = (ev) => { if (ev.key === "Enter") name.onclick(); };
+  head.append(name, el("span", "n", `${raw.new ? "new · " : ""}+${raw.added} / -${raw.removed}`));
+  card.append(head);
+  const dl = el("dl", "answers");
+  dl.append(el("dt", null, "what this does"), el("dd", toneOf(row.does), row.does));
+  dl.append(el("dt", null, "what could break"), el("dd", null, answerList(row.breaks)));
+  dl.append(el("dt", null, "how to check it yourself"), el("dd", null, answerList(row.check)));
+  card.append(dl);
+  const plan = readPlan(r);
+  const holder = el("div");
+  holder.hidden = !(plan && plan.fold_diff === false);
+  const btn = el("button", "showdiff", holder.hidden ? "show the diff" : "hide the diff"); btn.type = "button";
+  btn.title = "The diff is only folded here, never dropped: the same bytes the Engineer level shows.";
+  btn.onclick = () => {
+    if (!holder.childElementCount) holder.append(diffBlock(r, raw));
+    holder.hidden = !holder.hidden;
+    btn.textContent = holder.hidden ? "show the diff" : "hide the diff";
+  };
+  card.append(holder, btn);
+  (r.comments || []).forEach((c, i) => { if (c.file === row.path) card.append(reviewComment(c, i + 1, r.root)); });
+  return card;
+}
 const SEV_TAG = { critical: "kill", suggestion: "warn", note: "ship" };
 function reviewTag(r) {
   if (r.status === "skipped") return ["warn", "SKIPPED"];
@@ -1005,13 +1081,25 @@ function drawReview() {
   if (!r) { box.append(el("div", "blank", "After a turn that writes files, a second reader reports here. It applies nothing.")); return; }
   const [cls, word] = reviewTag(r);
   const kicker = el("div", "kicker");
-  kicker.append(el("span", `verdict-tag ${cls}`, word), el("span", null, `${r.model} · ${r.seconds.toFixed(1)} s · advice only`));
+  kicker.append(
+    el("span", `verdict-tag ${cls}`, word),
+    el("span", null, `${r.model} · ${r.seconds.toFixed(1)} s · advice only`),
+    levelSwitch(r)
+  );
   box.append(kicker);
   if (r.status !== "reviewed") { box.append(el("p", "summary", r.reason)); return; }
+  const plan = readPlan(r);
   if (r.summary) box.append(el("p", "summary", r.summary));
-  const listed = new Set(r.files.map((f) => f.path));
-  r.files.forEach((f) => box.append(reviewFile(r, f)));
-  r.comments.forEach((c, i) => { if (!listed.has(c.file)) box.append(reviewComment(c, i + 1, r.root)); });
+  if (plan && plan.level === "beginner") {
+    const listed = new Set(plan.files.map((row) => row.path));
+    plan.files.forEach((row) => box.append(beginnerFile(r, row)));
+    (r.comments || []).forEach((c, i) => { if (!listed.has(c.file)) box.append(reviewComment(c, i + 1, r.root)); });
+  } else {
+    const listed = new Set(r.files.map((f) => f.path));
+    r.files.forEach((f) => box.append(reviewFile(r, f)));
+    r.comments.forEach((c, i) => { if (!listed.has(c.file)) box.append(reviewComment(c, i + 1, r.root)); });
+  }
+  (plan ? plan.notes : []).forEach((note) => box.append(el("div", "foot", note)));
   const foot = [r.dropped ? `${r.dropped} comment(s) left out: they pointed at a line the diff never touched` : "",
     "nothing here was applied to a file: send a comment as your next turn, or remember it for every later review"].filter(Boolean);
   box.append(el("div", "foot", foot.join(" · ")));

@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mwm_harness import codemap
+from mwm_harness import codemap, levels
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
 from mwm_harness.assurance import Card as AssuranceCard
@@ -311,6 +311,8 @@ class Session:
         self.last_flags = FlagReport()  # the method bug_flags() writes its newest report here
         self.proof_of_fix: dict[str, Any] | None = None
         self.last_checks: list[CheckResult] = []  # newest run_checks() results, for /assurance
+        # Item 25: an unknown reading_level warns once per session, not once per review.
+        self._level_warned = False
         # Item 22: evidence for the assurance card and the card itself, newest turn.
         self._saw_test_run = False
         self._saw_test_pass = False
@@ -1628,6 +1630,27 @@ class Session:
 
         return caller
 
+    def _review_payload(self, review: Review) -> dict[str, Any]:
+        """Item 25: the review plus both reading plans, built from evidence this turn already made.
+
+        The check chain, the last run-it coverage and the spec's criterion map are read as they
+        stand; nothing here runs a command or asks a model. Both plans come off the same pass, so
+        the panel and the terminal switch level by picking the other one instead of re-reviewing.
+        """
+        payload = review.as_dict()
+        level, why = levels.parse_level(self.settings.reading_level)
+        if why and not self._level_warned:
+            self._level_warned = True
+            self.bus.emit(ev.Notice("warn", why))
+        payload["reading_level"] = level
+        payload["views"] = levels.views(
+            payload,
+            checks=as_dicts(self.last_checks),
+            runit=self._last_runit,
+            coverage=self.spec_coverage,
+        )
+        return payload
+
     async def _review_turn(self) -> None:
         """The automatic Review Desk pass: after a turn that wrote files, when the setting is on.
 
@@ -1658,7 +1681,7 @@ class Session:
         def skip(reason: str) -> Review:
             review = Review(str(root), spec.id, "skipped", reason)
             self.review = review
-            self.bus.emit(ev.ReviewFinished(str(root), review.as_dict()))
+            self.bus.emit(ev.ReviewFinished(str(root), self._review_payload(review)))
             return review
 
         if not paths:
@@ -1699,7 +1722,7 @@ class Session:
             left_out=skipped_names(root, paths),
         )
         self.review = review
-        self.bus.emit(ev.ReviewFinished(str(root), review.as_dict()))
+        self.bus.emit(ev.ReviewFinished(str(root), self._review_payload(review)))
         return review
 
     def review_comment(self, number: int) -> Comment:

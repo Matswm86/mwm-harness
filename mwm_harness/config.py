@@ -260,6 +260,13 @@ class Settings:
     # session's model; a models.toml id or an agent_models key overrides it and falls back to the
     # session's model with a warning when that name resolves to nothing.
     spec_model: str = ""
+    # Reading levels (plan item 25): which arrangement of the same review a turn is drawn in by
+    # default. beginner is the walkthrough, the plain "what could break" and how to check it;
+    # engineer is the raw diff, the check chain, coverage and trace. It is a view setting: it
+    # changes no data and costs no extra model call, and the panel or /level can switch it per turn
+    # without re-running anything. A value that names neither level keeps engineer and says so as
+    # a visible warning at the first review; a view preference must never abort a session.
+    reading_level: str = "engineer"
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
