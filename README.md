@@ -763,6 +763,46 @@ it off stops them, and a note that "approves all writes" still leaves both Write
 also pins the cost counting, the quiet answer that leaves no note, a malformed answer that
 fails visibly but never breaks the turn, the headless subscription skip, and the panel wiring.
 
+## Session-end lessons
+
+At session end one cheap model reads the finished session and appends at most 3 **candidate**
+lessons to a review queue, because after the Claude cutover nobody writes feedback notes by
+hand unless the harness does. Off in the shipped default (`lessons_at_session_end` in
+`settings.toml` turns it on) and skipped below `lessons_min_calls` tool calls, so a three-call
+question costs nothing.
+
+It writes candidates and nothing else. Each line names its session and the model that wrote
+it, and the queue lives at `data/lessons/LESSONS.md`. This code path never edits `QWEN.md`,
+never writes under `memory/` and never touches a skill: accepting a lesson means a person
+editing a rule file themselves, the same approval-first limit brain ingestion runs under.
+`tests/test_lessons.py` proves that by running a pass over a workspace containing all three
+and comparing bytes.
+
+The shape is measured, not assumed:
+
+* A whole transcript is the wrong input. Across this box's 122 sessions the largest is about
+  335,000 tokens and 12 pass 131,072, which is the window of the default `qwen/qwen3.8-27b`.
+  Tool results and reasoning are 85% of a transcript while the prose a lesson needs is 5.5%.
+* The transport limit is tighter than the window. Groq refuses a 27b request over 7,000 *input*
+  tokens per minute: a 24,000-character digest was counted as 8,403 tokens and answered HTTP
+  413. These digests run 2.65 characters per token, not four, so `MAX_DIGEST_CHARS` is 12,000
+  and a live pass on the largest session counted 4,487 tokens (64% of the ceiling).
+* Every human message and every failed tool result is kept ahead of the model's own prose, so
+  the cap can only trim routine calls. A cut is named inside the digest.
+* Emails and credentials are masked before the prompt leaves the machine.
+
+Statuses are `recorded`, `quiet`, `skipped` and `failed`, and each carries its reason on the
+`LessonsFinished` event: a pass that silently did nothing would look exactly like a session
+with nothing to learn. A headless `mwm -p` turn writes no candidate, because that path is the
+gate scripts and the audits, and their traffic would bury the queue.
+
+Tests: `tests/test_lessons.py` (16, all offline) runs the plan's closing test: a scripted
+transcript with the same failing command twice produces exactly one candidate naming that
+command, and a second run on the same session id writes nothing and spends no request. It also
+pins the min-calls floor, the quiet answer, a malformed answer, a provider error, the headless
+skip, the cut-digest priority, and `spike/real_lessons_check.py` runs the same pass against the
+live endpoint.
+
 ## Setup
 
 ```bash
