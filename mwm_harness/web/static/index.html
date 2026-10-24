@@ -1243,6 +1243,23 @@ function advisorFinished(e) {
   if (a.status === "quiet") { note("info", `advisor (${a.model}): read the session, found nothing worth a note · ${cost}`); return; }
   note(a.status === "failed" ? "warn" : "info", `advisor ${a.status}: ${a.reason || "no reason given"}${tok ? ` · ${cost}` : ""}`);
 }
+/* ------- item 3: /goal, the loop until the check passes and the checker agrees ------- */
+function goalStarted(e) {
+  if (turn) turn.goal = `started (${e.max_turns} attempts, checker ${e.model})`;
+  note("info", `goal started: ${String(e.goal).slice(0, 120)} · checker ${e.model} · max ${e.max_turns} attempts · baseline check exit ${e.baseline_exit === null ? "timed out" : e.baseline_exit}`);
+}
+function goalAttempt(e) {
+  if (turn) turn.goal = `attempt ${e.turn}: exit ${e.exit_code}${e.verdict ? ", checker " + e.verdict : ""}`;
+  note("info", `goal attempt ${e.turn}: check exited ${e.exit_code === null ? "on timeout" : e.exit_code}${e.verdict ? ", checker said " + e.verdict : ", no checker call"}${e.reason ? ` · ${String(e.reason).slice(0, 140)}` : ""}`);
+}
+function goalFinished(e) {
+  const r = e.report || {};
+  if (turn) turn.goal = r.status;
+  if (r.status === "done") { note("info", `goal DONE: ${String(r.goal).slice(0, 120)} (${r.attempts} attempt(s), ${r.requests_spent} model requests)`); return; }
+  if (r.status === "refused") { note("warn", `goal refused: ${r.reason}`); return; }
+  if (r.status === "off") { note("info", r.goal ? `goal dropped: ${String(r.goal).slice(0, 120)}` : "no goal was running"); return; }
+  note("warn", `goal ${r.status}: ${String(r.goal).slice(0, 120)}${r.reason ? ` · ${r.reason}` : ""}${r.state_file ? " · state kept, /goal continue to resume" : ""}`);
+}
 /* ------- items 30 + 22: bug flags, prove-the-fix, assurance card ------- */
 const assuranceByTab = new Map();  // tab id -> last AssuranceFinished card
 const ASSUR_WORD = { pass: "PASS", fail: "FAIL", not_run: "NOT RUN", na: "N/A", "": "EMPTY" };
@@ -1740,6 +1757,9 @@ const handlers = {
   AssuranceFinished: assuranceFinished,
   SpecStarted: specStarted,
   SpecFinished: specFinished,
+  GoalStarted: goalStarted,
+  GoalAttempt: goalAttempt,
+  GoalFinished: goalFinished,
   AdvisorStarted: advisorStarted,
   AdvisorFinished: advisorFinished,
   ReviewStarted: reviewStarted,
@@ -1872,6 +1892,7 @@ const SLASH = [["plan", "write or show the plan"], ["tasks", "task list"], ["age
   ["advise", "advisor on a timer: on [minutes] / off / status"],
   ["trace", "calls one test makes"], ["review", "a second reader over this turn's changes"],
   ["review-send", "send comment N of the last review as your next turn"], ["review-remember", "keep comment N for every later review"],
+  ["goal", "loop turns until --check exits 0 and a read-only checker agrees done"],
   ["undo", "put back the last turn's file changes"], ["stop", "stop all: emergency stop"], ["clear", "clear the history"], ["help", "help"]];
 const input = $("input"), menu = $("menu"); let sel = 0, shown = [];
 SLASH.slice(0, 7).forEach(([c]) => { const b = el("button", null, "/" + c); b.type = "button"; b.onclick = () => { input.value = "/" + c; input.focus(); drawMenu(); }; $("slashbar").append(b); });

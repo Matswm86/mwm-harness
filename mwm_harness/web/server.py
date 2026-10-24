@@ -80,6 +80,7 @@ SIDE_COMMANDS = (
     "/fix",
     "/assurance",
     "/spec",
+    "/goal",
 )
 CLOSED_TABS_KEPT = 10
 # The allow-list key an "always" answer to a code-pane save is remembered under. It is not a tool

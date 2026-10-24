@@ -167,7 +167,7 @@ stdio server plays MCP, a mocked transport plays the web.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
   /commands /plan /files /open /agents /jev /postmortem /undo /hw /check /runit
-  /trace /diagnose /review /review-send /review-remember /spec /level /assurance /flags /fix
+  /trace /diagnose /review /review-send /review-remember /spec /goal /level /assurance /flags /fix
   /compact /init /resume /tab
   /clear /quit`, plus one per command file and per skill.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
@@ -469,7 +469,8 @@ permission mode, sandbox, `sandbox_tasks_max`, `sandbox_memory_max_mb`,
 `sandbox_file_max_mb`, `sandbox_tmpfs_max_mb`, `session_write_cap_mb`,
 extra writable and readable paths, `bash_env_keep`,
 `max_requests_per_turn`, `prune_tool_results`, `prune_keep_turns`, `prune_min_chars`,
-`compact_model`, hook settings files, `mcp_allow`, `mcp_files`,
+`compact_model`, `goal_max_turns`, `goal_max_requests`, `goal_check_timeout`,
+`goal_model`, hook settings files, `mcp_allow`, `mcp_files`,
 `skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),
 `hooks.json` (hooks in the `settings.json` format), `mods.toml` (the panel's F1-F9
@@ -599,6 +600,43 @@ scrubbed of private names before commit.
 Tests: `tests/test_spec.py` (26, all offline): the validators with no model, the
 gated walk against a scripted provider and a recorded approver, the assurance row
 against the real card, and one approval card per step over the panel's websocket.
+
+## The goal loop
+
+`/goal "<end state>" --check "<command>"` binds a person's end state to one
+deterministic command and runs worker turns until it exits 0. What makes it more
+than an auto-retry is who says done: after every passing check a separate read-only
+checker session judges the goal, the check tail and the diff since the goal started,
+and only its `DONE` ends the loop. The checker shares no transcript with the worker
+(it has `Read`, `Grep` and `Glob` and nobody to approve anything), the worker never
+sees the checker's prompt, and only the verdict word and one reason sentence come
+back to it. Three stops sit outside the worker's reach. The baseline: before the
+loop starts the check runs once on the untouched repo, and a check that already
+passes there refuses to start (it proves nothing about future edits; the stored
+baseline is kept so `--resume` does not rerun it). The assurance card: a passing
+check plus a `DONE` verdict still cannot say done while the card holds, and the
+hold names its rows back to the worker. And the existing brakes plus the caps:
+`goal_max_turns` (8) and `goal_max_requests` (300, counting worker and checker
+requests alike) stop the loop with the reason in the report; a worker turn that
+ends on any loop brake ends the goal with that note. The check command is the
+person's own string run through `/bin/sh` in the repo root under
+`goal_check_timeout` (120 s; a timeout is a failed attempt, never a pass), checked
+once against the deny list at the start, because the loop would run it unattended.
+Every worker turn is a normal `send()`: same approvals, same hooks, same permission
+mode; nothing in the loop bypasses an answer nobody gave. The loop state lives in
+`goal.json` beside the project's session transcripts: a stopped loop (capped, brake,
+spend, cancelled, checker failure) keeps the file and a new session in the project
+names the unfinished goal at startup; `/goal continue` picks up at the stored attempt
+count; only a done loop deletes it. `goal_model` names the checker's model; unset or
+unresolvable falls back to the session's own model with a visible warning. `/goal`
+with no argument prints the status.
+
+Tests: `tests/test_goal.py` (14, all offline): the plan's closing run twice over
+(fails twice, fixes on turn 3, checker DONE, loop stops; and the never-passing check
+capped with the reason), the checker's separation from the worker's transcript, the
+baseline refusal, a deny-listed check command, the headless refusal, a NOT DONE
+holding the loop open, `continue` resuming at the stored attempt, the assurance gate
+holding a DONE verdict back, and both front-ends carrying the command.
 
 ## Two reading levels
 

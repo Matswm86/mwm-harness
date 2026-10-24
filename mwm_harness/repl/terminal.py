@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from mwm_harness import events as ev
-from mwm_harness import hardware, postmortem
+from mwm_harness import goal, hardware, postmortem
 from mwm_harness.assurance import card_from_dict
 from mwm_harness.config import EFFORTS, ModelSpec
 from mwm_harness.jev import format_report, report
@@ -70,6 +70,10 @@ HELP = """\
 /spec [IDEA|SLUG [step]]  write a spec: requirements.md, then design.md, then tasks.md, each one
                       needing your OK before the next; /spec SLUG shows its status and loads its
                       tasks, /spec SLUG <requirements|design|tasks> redoes one step
+/goal "END" --check "CMD"  loop worker turns until CMD exits 0, then a separate read-only
+                      checker must answer DONE before the goal counts as done; the check must
+                      fail on the untouched repo or the goal refuses to start. /goal shows the
+                      status, /goal continue resumes a stopped loop, /goal off drops it
 /review [file ...]    a second reader on the turn's diff: a walkthrough line per file plus comments
                       with severity. Advice only, nothing is applied (also runs after an editing turn)
 /review-send N [note] send comment N of the last review as your next turn, quoting its file:line
@@ -210,6 +214,11 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
         return True
     if name == "/spec":
         await session.spec_command(argument)
+        return True
+    if name == "/goal":
+        goal_report = await session.goal_command(argument)
+        for row in goal.report_lines(goal_report):
+            out.line(row, stamp=False)
         return True
     if name == "/mcp" and "refresh" in argument.split():
         await session.connect_mcp(refresh=True)
