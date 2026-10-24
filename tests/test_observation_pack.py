@@ -89,7 +89,12 @@ def test_session_packs_on_the_third_request_and_archive_is_readable(make_session
     sizes = [len(tool_message(r)) for r in provider.requests[1:]]
     assert sizes[0] == sizes[1] > 20_000  # requests 2 and 3 carry the full Read output
     assert sizes[2] < 1700  # request 4 carries the 1 KB excerpt, a header and the path
-    stored = session.messages[2].content[0]["content"]
+    stored = next(
+        block["content"]
+        for message in session.messages
+        for block in message.blocks()
+        if block.get("type") == "tool_result"
+    )
     assert len(stored) > 20_000  # the session keeps the full result
     archive = next(session.tool_ctx.scratch.glob("observation-*.txt"))
     assert archive.read_text(encoding="utf-8") == stored

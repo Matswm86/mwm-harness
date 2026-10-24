@@ -176,7 +176,7 @@ def test_two_parallel_calls_both_answered_in_order(make_session):
     ]
     session, _, _ = make_session(turns)
     run(session.send("two globs"))
-    calls = session.messages[1].tool_uses()
+    calls = next(m for m in session.messages if m.tool_uses()).tool_uses()
     assert [r["tool_use_id"] for r in tool_results(session)] == [c["id"] for c in calls]
 
 
@@ -229,8 +229,8 @@ def test_stop_hook_blocks_once_then_sees_stop_hook_active(make_session, tmp_path
     assert [p["stop_hook_active"] for p in payloads] == [False, True]
     assert payloads[0]["transcript_path"] == str(session.transcript.path)
     # The feedback reached the model as a meta user message, not as a typed prompt.
-    feedback = [m for m in session.messages if m.is_meta]
-    assert "remove the em dash" in feedback[0].text()
+    blocked = next(m for m in session.messages if "remove the em dash" in m.text())
+    assert blocked.is_meta
     assert "remove the em dash" in provider.requests[1]["messages"][-1]["content"]
 
 
@@ -332,7 +332,8 @@ def test_prompt_hook_context_reaches_the_model_as_meta(make_session, tmp_path):
     run(session.send("what day is it"))
     sent = provider.requests[0]["messages"][1]["content"]
     assert "TODAY IS SATURDAY" in sent and sent.endswith("what day is it")
-    assert [m.is_meta for m in session.messages[:2]] == [True, False]
+    hook_note = next(m for m in session.messages if "TODAY IS SATURDAY" in m.text())
+    assert hook_note.is_meta and not session.messages[-1].is_meta
 
 
 def test_posttooluse_exit_2_feedback_is_appended_to_the_result(make_session, tmp_path):
@@ -402,7 +403,8 @@ def test_resume_restores_history_and_repairs_unanswered_calls(make_session):
 
     run(scenario())
     restored = load_messages(first.transcript.path)
-    assert [m.role for m in restored] == ["user", "assistant", "user"]
+    # The environment reminder rides along as a meta message; the real history is the rest.
+    assert [m.role for m in restored if not m.is_meta] == ["user", "assistant", "user"]
 
     second, _, provider = make_session(
         [chunks_for("Welcome back.")], resume_from=first.transcript.path

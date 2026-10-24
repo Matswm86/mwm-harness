@@ -47,7 +47,8 @@ def test_manual_compact_replaces_history_and_fires_postcompact(make_session, tmp
     assert "SUMMARY: asked X" in after[0] and after[0].endswith("continue")
     assert "do X" not in json.dumps(provider.requests[2]["messages"])
     event = recorder.of(ev.Compacted)[0]
-    assert (event.trigger, event.messages_before) == ("manual", 2)
+    # The summary replaced the whole first turn: environment reminder, prompt, answer.
+    assert (event.trigger, event.messages_before) == ("manual", 3)
     assert session.meter.used == 100 + 10  # the meter restarts, then counts the next answer
 
 
@@ -124,9 +125,10 @@ def test_auto_compact_can_be_switched_off(make_session):
 def test_a_failed_summary_keeps_the_history(make_session):
     session, recorder, _ = make_session([chunks_for("answer"), chunks_for("")])
     run(session.send("q"))
+    before = len(session.messages)
     result = run(session.compact())
     assert result.summary == "" and result.failed and not result.pruned
-    assert len(session.messages) == 2
+    assert len(session.messages) == before  # nothing was dropped
     assert "history kept" in recorder.of(ev.Notice)[-1].text
 
 

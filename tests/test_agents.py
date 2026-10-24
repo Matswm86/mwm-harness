@@ -82,9 +82,11 @@ def test_task_runs_a_child_session_and_returns_only_its_report(make_session):
     assert child_request["messages"][0]["content"].startswith("You are a code reviewer")
     offered = {spec["function"]["name"] for spec in child_request["tools"]}
     assert offered == {"Read", "Grep", "Glob"}  # the agent's tool list, never Task
-    assert [m["content"] for m in child_request["messages"] if m["role"] == "user"] == [
-        "Review note.txt"
-    ]
+    child_user = [m["content"] for m in child_request["messages"] if m["role"] == "user"]
+    # Its own environment reminder plus the task, merged into one user message: none of the
+    # parent's conversation crosses over.
+    assert len(child_user) == 1 and child_user[0].endswith("Review note.txt")
+    assert "check the note" not in child_user[0]
     result = next(
         block
         for message in session.messages
@@ -92,7 +94,8 @@ def test_task_runs_a_child_session_and_returns_only_its_report(make_session):
         if block.get("type") == "tool_result"
     )
     assert result["content"] == "Report: note.txt holds one line."
-    assert len(session.messages) == 4  # prompt, Task call, its result, answer: no child history
+    # Environment reminder, prompt, Task call, its result, answer: no child history.
+    assert len(session.messages) == 5
     started, finished = recorder.of(ev.SubagentStarted)[0], recorder.of(ev.SubagentFinished)[0]
     assert (started.agent, finished.reason, finished.tool_calls) == ("reviewer", "done", 2)
     assert "not configured" in recorder.of(ev.Notice)[0].text  # opus is not mapped in this test
