@@ -312,6 +312,21 @@ class Settings:
     # warning when that name resolves to nothing, exactly like ``advisor_model``: a typo
     # must not lose the compaction, and a cheaper model writing summaries is the point.
     compact_model: str = ""
+    # Goal loop (plan item 3): /goal "<end state>" --check "<command>" runs worker turns until
+    # the command exits 0, then a separate read-only checker has to answer DONE. This is the
+    # attempt cap: turns, not tool calls, and the existing per-turn brakes still apply inside
+    # each one.
+    goal_max_turns: int = 8
+    # Spend cap: model requests across the whole loop, worker and checker alike (the checker
+    # child's meter is absorbed into the parent). 0 switches it off; the turn cap still holds.
+    goal_max_requests: int = 300
+    # One check command runs through /bin/sh in the repo root; a check that outlives this is
+    # recorded as a failed attempt, never as a pass.
+    goal_check_timeout: float = 120.0
+    # A models.toml id or an agent_models key for the checker. "" or an unresolvable name falls
+    # back to this session's own model with a visible warning, like ``compact_model``: a goal
+    # the lead model checks itself is weaker evidence, and saying so beats a dead setting.
+    goal_model: str = ""
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.
     observation_pack_limit: int = 10 * 1024

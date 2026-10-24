@@ -319,6 +319,50 @@ class AdvisorFinished(Event):
 
 
 @dataclass
+class GoalStarted(Event):
+    """Item 3: one /goal loop took hold: a person's end state bound to one check command.
+
+    ``model`` is the checker's id and ``baseline_exit`` the check's exit code on the untouched
+    repo. A check that passed there never starts a loop (item 7), so a start always carries a
+    failing or timed-out baseline; ``None`` here means the baseline itself timed out.
+    """
+
+    goal: str
+    check: str
+    model: str
+    max_turns: int
+    baseline_exit: int | None
+
+
+@dataclass
+class GoalAttempt(Event):
+    """One worker turn of the goal loop and what the check said after it.
+
+    ``verdict`` is "" when the check itself failed and no checker was called at all; otherwise
+    it is the checker's word (done | not-done) with its sentence in ``reason``. ``exit_code``
+    None means the check timed out, which is a failure, not a pass.
+    """
+
+    turn: int
+    exit_code: int | None
+    verdict: str
+    reason: str
+
+
+@dataclass
+class GoalFinished(Event):
+    """One /goal run ended: done, capped, spend, brake, cancelled, checker_failed or off.
+
+    ``report`` carries attempts, model requests spent, the last failure tail and the state
+    file when the loop can still be picked up. Only a done loop deletes its file; every other
+    status leaves it so a new session in this project can say what is unfinished.
+    """
+
+    root: str
+    report: dict[str, Any]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 
