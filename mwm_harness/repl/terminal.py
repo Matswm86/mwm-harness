@@ -60,6 +60,9 @@ HELP = """\
 /fix                  prove-the-fix: rerun this session's recorded failing tests alone
 /assurance            the six-row assurance card: a FAIL or an empty row holds the turn back
                       from being presented as done (also builds after each editing turn)
+/spec [IDEA|SLUG [step]]  write a spec: requirements.md, then design.md, then tasks.md, each one
+                      needing your OK before the next; /spec SLUG shows its status and loads its
+                      tasks, /spec SLUG <requirements|design|tasks> redoes one step
 /review [file ...]    a second reader on the turn's diff: a walkthrough line per file plus comments
                       with severity. Advice only, nothing is applied (also runs after an editing turn)
 /review-send N [note] send comment N of the last review as your next turn, quoting its file:line
@@ -189,6 +192,9 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
             return True
         for row in session.assurance.render().splitlines():
             out.line(row, stamp=False)
+        return True
+    if name == "/spec":
+        await session.spec_command(argument)
         return True
     if name == "/mcp" and "refresh" in argument.split():
         await session.connect_mcp(refresh=True)
@@ -350,6 +356,25 @@ class Printer:
                 else:
                     code = DIM
                 self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.SpecStarted):
+            self.line(
+                self.paint(DIM, f"[spec] {event.model} drafting the {event.step} for {event.slug}"),
+                event,
+            )
+        elif isinstance(event, ev.SpecFinished):
+            for row in spec_lines(event.spec):
+                if "no test names" in row or "refused:" in row or ": refused" in row:
+                    code = RED
+                elif (
+                    "threat surface" in row
+                    or "re-flagged" in row
+                    or "no task closes" in row
+                    or "criterion link is gone" in row
+                ):
+                    code = YELLOW
+                else:
+                    code = DIM
+                self.line(self.paint(code, row), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
 
@@ -482,6 +507,65 @@ def check_line(result: dict[str, Any]) -> str:
     if result["status"] == "fail":
         text += f", {len(result['findings'])} finding(s)"
     return text + (f": {result['reason']}" if result["reason"] else "")
+
+
+def spec_lines(report: dict[str, Any]) -> list[str]:
+    """One /spec result as plain lines: what landed, what was refused, what has no test."""
+    steps = report.get("steps") or []
+    status = report.get("status", "")
+    if not steps:
+        return [f"[spec] {status.upper()}: {report.get('reason', '')}"]
+    written = [s["step"] for s in steps if s.get("status") == "written"]
+    head = f"[spec] {report.get('slug', '')}: " + (
+        "wrote " + ", ".join(written) if written else status
+    )
+    if report.get("dir"):
+        head += f" ({report['dir']})"
+    if report.get("seconds"):
+        head += f" in {report['seconds']}s"
+    rows = [head]
+    for step in steps:
+        if step.get("status") == "written":
+            rows.append(f"  {step['step']}: {step.get('file', '')}")
+        else:
+            rows.append(f"  {step['step']}: {step.get('status', '')} {step.get('reason', '')}")
+            for error in step.get("errors") or []:
+                rows.append(f"    refused: {error}")
+    if report.get("reason"):
+        rows.append(f"  {report['reason']}")
+    criteria = report.get("criteria") or []
+    gap = report.get("uncovered") or []
+    if criteria:
+        if gap:
+            rows.append(
+                f"  tests: {len(gap)} of {len(criteria)} criteria have no test naming them;"
+                f" no test names {', '.join(gap)}"
+            )
+        else:
+            rows.append(
+                f"  tests: all {len(criteria)} criteria are quoted by a test "
+                f"({', '.join(c['id'] for c in criteria[:3])}"
+                + (f" +{len(criteria) - 3} more)" if len(criteria) > 3 else ")")
+            )
+    if report.get("surface"):
+        rows.append(f"  threat surface: {report['surface']}, so design.md needs a threat model")
+    broken = list(report.get("tasks_without_criteria") or []) + list(
+        report.get("stale_tasks") or []
+    )
+    if broken:
+        rows.append(
+            f"  {len(broken)} task(s) cannot be checked, their criterion link is gone: "
+            + ", ".join(broken)
+        )
+    if report.get("orphans"):
+        rows.append("  no task closes: " + ", ".join(report["orphans"]))
+    if report.get("reflagged"):
+        rows.append(
+            "  re-flagged for tests (criterion text changed): " + ", ".join(report["reflagged"])
+        )
+    if report.get("tasks_loaded"):
+        rows.append(f"  {report['tasks_loaded']} task(s) loaded into the task list")
+    return rows
 
 
 def format_todos(todos: list[dict[str, Any]]) -> str:

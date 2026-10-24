@@ -67,7 +67,9 @@ MAX_LIVE_EVENTS = 2000
 # Slash commands that run as background tasks. A review is a model call over the turn's diff,
 # so it belongs here with the checks: it can take a minute and must not block the socket reader.
 # /fix reruns recorded failing tests under pytest; /assurance runs scans (detect-secrets,
-# pip-audit, semgrep, a PyPI lookup) that each need seconds of their own.
+# pip-audit, semgrep, a PyPI lookup) that each need seconds of their own. /spec is here because
+# each step is a draft call that can take half a minute, and the person answers an approval card
+# between steps rather than at the end.
 SIDE_COMMANDS = (
     "/check",
     "/runit",
@@ -77,6 +79,7 @@ SIDE_COMMANDS = (
     "/flags",
     "/fix",
     "/assurance",
+    "/spec",
 )
 CLOSED_TABS_KEPT = 10
 # The allow-list key an "always" answer to a code-pane save is remembered under. It is not a tool

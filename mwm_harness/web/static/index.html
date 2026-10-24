@@ -1101,6 +1101,33 @@ function diagnoseFinished(e) {
   setLive(false, "read the failure");
   note("info", `failure diagnosis (${d.source}): ${lines.join(" · ")}`);
 }
+/* ------- item 23: /spec, one draft and one approval per step ------- */
+function specStarted(e) { setLive(true, `${e.model} drafting the ${e.step} for ${e.slug}`); }
+function specFinished(e) {
+  const s = e.spec;
+  const steps = s.steps || [];
+  if (!steps.length) {
+    setLive(false, `spec ${s.status}`);
+    note(s.status === "skipped" ? "info" : "warn", `spec: ${s.reason}`);
+    return;
+  }
+  const written = steps.filter((x) => x.status === "written").map((x) => x.step);
+  const stopped = steps.find((x) => x.status !== "written" && x.status !== "on-disk");
+  const gap = s.uncovered || [];
+  const bits = [written.length ? `wrote ${written.join(", ")}` : s.status];
+  if (s.criteria.length) {
+    bits.push(gap.length ? `${gap.length}/${s.criteria.length} criteria no test names (${gap.join(", ")})` : `all ${s.criteria.length} criteria quoted by a test`);
+  }
+  const broken = (s.tasks_without_criteria || []).concat(s.stale_tasks || []);
+  if (broken.length) bits.push(`${broken.length} task(s) uncheckable, criterion link gone (${broken.join(", ")})`);
+  if ((s.orphans || []).length) bits.push(`no task closes ${s.orphans.join(", ")}`);
+  if (s.surface) bits.push(`threat model needed (${s.surface})`);
+  if (s.tasks_loaded) bits.push(`${s.tasks_loaded} task(s) loaded in the list`);
+  if (s.reflagged && s.reflagged.length) bits.push(`re-flagged for tests: ${s.reflagged.join(", ")}`);
+  const failed = !!stopped && ["invalid", "failed", "refused"].includes(stopped.status);
+  setLive(false, written.length ? `spec ${s.slug}: ${written.join(", ")}` : `spec ${s.status}`);
+  note(failed ? "warn" : "info", `spec ${s.slug} (${s.dir}): ${bits.join(" · ")}${stopped ? ` · ${stopped.step} ${stopped.status}: ${stopped.errors.length ? stopped.errors.join("; ") : stopped.reason}` : ""}`);
+}
 /* ------- items 30 + 22: bug flags, prove-the-fix, assurance card ------- */
 const assuranceByTab = new Map();  // tab id -> last AssuranceFinished card
 const ASSUR_WORD = { pass: "PASS", fail: "FAIL", not_run: "NOT RUN", na: "N/A", "": "EMPTY" };
@@ -1590,6 +1617,8 @@ const handlers = {
   BugFlagsFinished: bugFlagsFinished,
   FixProved: fixProved,
   AssuranceFinished: assuranceFinished,
+  SpecStarted: specStarted,
+  SpecFinished: specFinished,
   ReviewStarted: reviewStarted,
   ReviewFinished: reviewFinished,
   ReviewComment: () => {},  // the desk clicked remember: the note below is the confirmation

@@ -137,7 +137,11 @@ class CodeMap:
                 )
         text = "\n".join(rows)
         if len(text) > limit:
-            text = text[:limit].rsplit("\n", 1)[0] + f"\n# cut at {limit:,} characters"
+            # The marker's own length is paid for BEFORE the cut. Truncating to ``limit`` and then
+            # appending it made the text longer than the cap the map promises, which is the one
+            # thing this function exists to guarantee.
+            marker = f"\n# cut at {limit:,} characters"
+            text = text[: max(0, limit - len(marker))].rsplit("\n", 1)[0] + marker
         return text
 
 

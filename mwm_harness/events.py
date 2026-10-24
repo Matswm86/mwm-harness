@@ -253,6 +253,32 @@ class AssuranceFinished(Event):
 
 
 @dataclass
+class SpecStarted(Event):
+    """Item 23: one draft call for one step of the spec walk.
+
+    ``step`` is ``requirements``, ``design`` or ``tasks``. Nothing is on disk yet when this fires:
+    the draft still has to pass its validator and the person's approval card.
+    """
+
+    slug: str
+    step: str
+    model: str
+
+
+@dataclass
+class SpecFinished(Event):
+    """Item 23: the outcome of one ``/spec`` walk, one step, or one status read.
+
+    ``spec["steps"]`` carries each step with its status and, for a refused one, the validator
+    errors that named what was missing. ``spec["uncovered"]`` lists the acceptance criteria no
+    test quotes, which is what the assurance card's correct row fails on.
+    """
+
+    root: str
+    spec: dict[str, Any]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 

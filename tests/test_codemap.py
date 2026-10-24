@@ -95,6 +95,21 @@ def test_the_map_text_is_one_line_per_function_and_fits_a_small_window() -> None
     assert tokens < 8_000, f"the map of mwm_harness/ is {tokens} tokens"
 
 
+def test_a_cut_map_never_overspends_the_cap_its_own_note_names(tmp_path: Path) -> None:
+    """Truncating to the limit and THEN appending the marker made the map longer than the limit.
+
+    The package's map crossed 24,000 characters when item 23 landed, which is where the arithmetic
+    was found wanting: the cut is the guarantee this function exists to make.
+    """
+    body = "\n".join(f"def function_{i}():\n    return {i}\n" for i in range(200))
+    code = codemap.index(tree(tmp_path, {f"m{row}.py": body for row in range(6)}))
+    for limit in (1_000, 5_000, codemap.MAX_TEXT_CHARS):
+        text = code.text(limit=limit)
+        assert len(text) <= limit, f"a {limit}-character cap held at {len(text)}"
+        assert text.endswith(f"# cut at {limit:,} characters")
+        assert text.startswith("# code map of") and "function_0 " in text, "a cut keeps its head"
+
+
 def test_a_review_carries_the_caller_line_for_the_functions_its_diff_touched(
     tmp_path: Path,
 ) -> None:

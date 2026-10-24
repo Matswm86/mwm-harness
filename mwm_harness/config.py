@@ -255,6 +255,11 @@ class Settings:
     # detect-secrets/bandit/pip-audit/PyPI existence of newly added requirement names. A slow
     # box or an offline session can switch them off; the row then says NOT RUN honestly.
     assurance_scans: bool = True
+    # Spec (plan item 23): /spec writes requirements.md, design.md and tasks.md in order, each
+    # step gated on the person's approval. Drafting is the lead model's own job, so "" means this
+    # session's model; a models.toml id or an agent_models key overrides it and falls back to the
+    # session's model with a warning when that name resolves to nothing.
+    spec_model: str = ""
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

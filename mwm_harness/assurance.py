@@ -368,8 +368,14 @@ async def build_card(
     saw_test_run: bool,
     saw_test_pass: bool,
     scans: bool = True,
+    spec: dict[str, Any] | None = None,
 ) -> Card:
-    """Fill the six rows from the evidence handed in. Runs no tests and no model call."""
+    """Fill the six rows from the evidence handed in. Runs no tests and no model call.
+
+    ``spec`` is the plan-item-23 bundle for this session: ``{"slug", "dir", "criteria",
+    "coverage"}``, where coverage maps each criterion id to the test node ids that quote it. It
+    arrives already measured: building a card scans nothing and calls nothing, as before.
+    """
     root = await asyncio.to_thread(repo_root, cwd)
     rel: list[str] = []
     for path in files:
@@ -456,18 +462,11 @@ async def build_card(
                 f"check chain clean on {len(files)} file(s): "
                 + ", ".join(r.check for r in checks[:6])
             )
-    if not code_touched:
-        correct = _row(
-            "correct",
-            "na",
-            "no code file changed this turn: docs and specs have nothing to run",
-            evidence,
-        )
-    else:
+    if code_touched:
+        # The plan's closing test for item 22: "a task with no tests: correct row FAIL". A code
+        # change that no test executed cannot be certified, so it fails instead of merely
+        # waiting; NOT RUN stays reserved for evidence a runner physically could not collect.
         if not saw_test_run:
-            # The plan's closing test: "a task with no tests: correct row FAIL". A code change
-            # that no test executed cannot be certified, so it fails instead of merely waiting;
-            # NOT RUN stays reserved for evidence a runner physically could not collect.
             fails.append("no test ran during this turn: run the repo's tests or /runit")
         elif not saw_test_pass:
             fails.append("the test run this session saw did not pass")
@@ -497,13 +496,53 @@ async def build_card(
         else:
             not_runs.append("changed-line coverage: NOT RUN yet (press /runit)")
         evidence.append("floor guard: NOT RUN here, it runs at commit time (pre-commit)")
-        evidence.append("per-criterion tests: /spec (plan item 23) is not built")
-        if fails:
-            correct = _row("correct", "fail", "; ".join(fails), evidence)
-        elif not_runs:
-            correct = _row("correct", "not_run", "; ".join(not_runs), evidence)
-        else:
-            correct = _row("correct", "pass", "", evidence)
+    # Item 23: a criterion no test quotes is a promise nobody kept, so it FAILS this row and
+    # names the criterion. It is measured whether or not this turn touched code: a spec whose
+    # criterion no test quotes stays false when only docs change, and a row that said "nothing
+    # to run" would hide exactly that. A session with no spec says so instead: nothing was
+    # promised, so there is nothing to hold. A spec whose requirements are still empty is NOT
+    # RUN, because checking zero criteria and passing would be the silent pass this card removes.
+    if spec is None:
+        evidence.append(
+            "per-criterion tests: no spec is loaded this session (/spec <idea> writes "
+            "requirements a test can quote)"
+        )
+    elif not spec.get("criteria"):
+        not_runs.append(
+            f"per-criterion tests: {spec.get('dir', 'the spec')} holds no AC-N criteria to check"
+        )
+    else:
+        coverage = spec.get("coverage") or {}
+        ids: list[str] = list(spec["criteria"])
+        gap = [cid for cid in ids if not coverage.get(cid)]
+        covered = len(ids) - len(gap)
+        if gap:
+            fails.append(
+                f"{len(gap)} of {len(ids)} acceptance criteria have no test naming them: "
+                f"{', '.join(gap)} ({spec.get('dir', 'the spec')})"
+            )
+        if covered:
+            named = [f"{cid} in {coverage[cid][0]}" for cid in ids if coverage.get(cid)]
+            evidence.append(
+                f"{covered}/{len(ids)} criteria quoted by a test: "
+                + ", ".join(named[:3])
+                + (f" (+{len(named) - 3} more)" if len(named) > 3 else "")
+            )
+    if fails:
+        correct = _row("correct", "fail", "; ".join(fails), evidence)
+    elif not code_touched:
+        correct = _row(
+            "correct",
+            "not_run" if not_runs else "na",
+            "; ".join(not_runs)
+            if not_runs
+            else "no code file changed this turn: docs and specs have nothing to run",
+            evidence,
+        )
+    elif not_runs:
+        correct = _row("correct", "not_run", "; ".join(not_runs), evidence)
+    else:
+        correct = _row("correct", "pass", "", evidence)
     card.rows.append(correct)
 
     # ---------- reliable ----------

@@ -167,7 +167,8 @@ stdio server plays MCP, a mocked transport plays the web.
 - `repl/terminal.py`, `cli.py`: the `mwm` command. Slash commands: `/help /model
   /models /context /usage /mode /think /permissions /tasks /hooks /memory /mcp /skills
   /commands /plan /files /open /agents /jev /postmortem /undo /hw /check /runit
-  /trace /diagnose /review /review-send /review-remember /compact /init /resume /tab
+  /trace /diagnose /review /review-send /review-remember /spec /assurance /flags /fix
+  /compact /init /resume /tab
   /clear /quit`, plus one per command file and per skill.
   A model's reasoning text (the `reasoning_content` or `reasoning` field of the
   stream) prints dimmed as it arrives; `/think off` hides it. Every printed
@@ -531,6 +532,48 @@ nothing here edits code.
   floor to check.
 
 Tests: `tests/test_bugflag.py`, `tests/test_assurance.py` (37, all offline).
+
+## Specs: three documents in order, each one gated, each criterion owed a test
+
+`/spec <idea>` writes three markdown files under `specs/<slug>/` in the repo being
+worked on, in this order: `requirements.md` (user stories plus numbered `- AC-N:`
+acceptance criteria), `design.md` (`## Stack`, `## Structure`, `## Data`, and a
+`## Threat model` whenever the requirements name a password, a token, a payment, an
+upload, a model call or any other surface), then `tasks.md`, where every task line
+ends with the criteria it closes. One draft call per step, and every step waits for
+you: the draft goes through the same approval card as a model `Write`, so answering
+`n` stops the walk there and nothing lands on disk. Plan mode and a headless run
+refuse before the first draft call, because nobody is there to answer the card.
+
+The shape is checked before a file is written, so a bad draft is refused rather than
+saved: a task that names no criterion, a criterion line that is not exactly
+`- AC-N: text`, a design missing the threat model its own requirements demand. The
+order is enforced on disk too: `/spec <slug> tasks` before `requirements.md` exists
+says what is missing and spends no draft call, and `/spec <slug> <step>` for a spec
+that is not on disk is refused as a name instead of starting a new idea.
+
+`/spec <slug>` re-reads a spec off disk with no model call, puts its tasks on the
+task rail and reports which criteria a test quotes; `/spec <slug> requirements`
+redoes one step. The files are the storage, so editing `requirements.md` by hand is
+the edit that counts, and the next card checks what the file says now. When a
+criterion's text moves, the tests that quoted the old wording are queued for
+prove-the-fix; a task left closing a criterion that no longer exists is named as
+uncheckable rather than dropped.
+
+What makes this more than a planner prompt is the join: `criterion_coverage()` walks
+the repo's test files and matches the literal `AC-N` id, and the assurance card's
+`correct` row FAILS on any criterion no test names, naming it. Delete the file that
+quoted `AC-2` and the row reads `1 of 3 acceptance criteria have no test naming
+them: AC-2 (specs/<slug>)`. It measures that whether or not the turn touched code, so
+a turn that only wrote markdown cannot certify a promise quietly. A session with no
+spec loaded is not a failure: nothing was promised, so the row says so as evidence
+instead. `spec_model` in `settings.toml` names a drafting model; unset, the session's
+own model drafts. Specs live in the project repo, so a public repo needs them
+scrubbed of private names before commit.
+
+Tests: `tests/test_spec.py` (26, all offline): the validators with no model, the
+gated walk against a scripted provider and a recorded approver, the assurance row
+against the real card, and one approval card per step over the panel's websocket.
 
 ## Setup
 

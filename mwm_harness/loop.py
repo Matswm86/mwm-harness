@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -89,6 +90,31 @@ from mwm_harness.skills import (
     load_skills,
     skill_roots,
     skills_prompt,
+)
+from mwm_harness.spec import (
+    DOC_NAME,
+    DRAFT_TIMEOUT,
+    SPEC_DIR,
+    STEPS,
+    Spec,
+    SpecReport,
+    Step,
+    changed_criteria,
+    criterion_coverage,
+    draft_prompt,
+    existing_slugs,
+    is_slug,
+    load_spec,
+    slug_from_idea,
+    spec_dir,
+    strip_fences,
+    threat_surface,
+    validate_design,
+    validate_requirements,
+    validate_tasks,
+)
+from mwm_harness.spec import (
+    system_prompt as spec_system_prompt,
 )
 from mwm_harness.streaming import StreamAssembler
 from mwm_harness.tools import Tool, ToolContext, ToolResult, default_tools
@@ -290,6 +316,11 @@ class Session:
         self._saw_test_pass = False
         self._last_runit: dict[str, Any] | None = None
         self.assurance: AssuranceCard | None = None
+        # Item 23: the spec this session wrote or loaded, and the test coverage read for its
+        # criteria. The card checks coverage fresh each turn; this copy is what the last /spec
+        # or /spec status saw, so the report can quote a number it actually measured.
+        self.spec: Spec | None = None
+        self.spec_coverage: dict[str, list[str]] = {}
         self.tool_ctx.assurance_handler = self.assurance_report
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
@@ -1274,6 +1305,323 @@ class Session:
         self.diagnose_budget.take()
         return await self.diagnose(text, source)
 
+    def spec_model(self) -> tuple[ModelSpec, str]:
+        """The model that drafts a spec: this session's model unless ``spec_model`` names one.
+
+        An unresolvable name falls back to the session's own model with a warning, which is the
+        opposite of the diagnosis critic. Drafting requirements is the lead model's own job, so
+        spending its tokens on it is not the silent surprise an unasked-for critic call is.
+        """
+        wanted = (self.settings.spec_model or "").strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            self.model,
+            f"spec_model {wanted!r} is not a configured model id or an agent tier, "
+            f"so {self.model.id} drafts the spec instead",
+        )
+
+    def _repo_note(self) -> str:
+        """The top level of this repo, so a design names real paths instead of invented ones."""
+        try:
+            entries = sorted(
+                p.name + ("/" if p.is_dir() else "")
+                for p in self.cwd.iterdir()
+                if not p.name.startswith(".")
+            )
+        except OSError:
+            return ""
+        return ", ".join(entries[:60])
+
+    async def spec_command(self, argument: str) -> SpecReport:
+        """``/spec``: write a spec, redo one step of one, or read what is already on disk.
+
+        ``/spec <idea>`` walks requirements, design and tasks in order, each step waiting for the
+        person. ``/spec <slug> <step>`` redrafts that one step from the documents on disk.
+        ``/spec <slug>`` loads that spec, puts its tasks on the rail and reports its coverage.
+        With no argument it reports the spec this session holds, or lists what is on disk.
+        """
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        arg = argument.strip()
+        tokens = arg.split()
+        if len(tokens) == 2 and is_slug(tokens[0]) and tokens[1] in STEPS:
+            if not spec_dir(root, tokens[0]).is_dir():
+                return self._spec_stop(
+                    root,
+                    tokens[0],
+                    f"no {SPEC_DIR}/{tokens[0]} folder is on disk, so there is no {tokens[1]} "
+                    "step to redo: /spec <idea> writes the first one",
+                )
+            return await self._spec_walk(root, tokens[0], "", [tokens[1]])
+        elif len(tokens) == 1 and is_slug(tokens[0]) and spec_dir(root, tokens[0]).is_dir():
+            return await self._spec_status(root, tokens[0], load_tasks=True)
+        if not arg:
+            slug = self.spec.slug if self.spec else ""
+            return await self._spec_status(root, slug, load_tasks=False)
+        return await self._spec_walk(root, slug_from_idea(arg), arg, list(STEPS))
+
+    def _spec_stop(self, root: Path, slug: str, reason: str) -> SpecReport:
+        report = SpecReport(slug=slug, dir=f"{SPEC_DIR}/{slug}", status="skipped", reason=reason)
+        self.bus.emit(ev.SpecFinished(str(root), report.as_dict()))
+        return report
+
+    async def _spec_status(self, root: Path, slug: str, load_tasks: bool) -> SpecReport:
+        """Read one spec off disk and report its criteria against the repo's tests."""
+        if not slug:
+            slugs = existing_slugs(root)
+            return self._spec_report(
+                root,
+                SpecReport(
+                    slug="",
+                    dir=f"{SPEC_DIR}/",
+                    status="skipped",
+                    reason=(
+                        "on disk: " + ", ".join(slugs) + " (open one with /spec <slug>)"
+                        if slugs
+                        else "no spec is loaded this session and none is on disk: "
+                        "/spec <idea> writes one"
+                    ),
+                ),
+            )
+        if not is_slug(slug):
+            return self._spec_report(
+                root,
+                SpecReport(
+                    slug=slug,
+                    dir="",
+                    status="skipped",
+                    reason=(
+                        f"{slug!r} is not a spec folder name: lowercase letters, digits and "
+                        "hyphens, at most 48 characters, no path"
+                    ),
+                ),
+            )
+        loaded = await asyncio.to_thread(load_spec, root, slug)
+        if loaded is None:
+            return self._spec_report(
+                root,
+                SpecReport(
+                    slug=slug,
+                    dir=f"{SPEC_DIR}/{slug}",
+                    status="skipped",
+                    reason="no readable document in that folder",
+                ),
+            )
+        self.spec = loaded
+        report = SpecReport(
+            slug=slug,
+            dir=loaded.directory,
+            status="loaded",
+            steps=[
+                Step(step, f"{loaded.directory}/{DOC_NAME[step]}", "on-disk")
+                for step in STEPS
+                if DOC_NAME[step] in loaded.files
+            ],
+            criteria=loaded.criteria,
+            tasks=loaded.tasks,
+            coverage=await asyncio.to_thread(criterion_coverage, root, loaded.criterion_ids()),
+            surface=threat_surface(loaded.text()),
+            orphans=loaded.orphan_criteria(),
+            refuted=[t.id for t in loaded.tasks_without_criteria()],
+            stale_tasks=[t.id for t in loaded.uncovered_tasks()],
+        )
+        self.spec_coverage = report.coverage
+        if load_tasks and loaded.tasks:
+            report.tasks_loaded = self._spec_load_tasks(loaded)
+        return self._spec_report(root, report)
+
+    def _spec_report(self, root: Path, report: SpecReport) -> SpecReport:
+        self.bus.emit(ev.SpecFinished(str(root), report.as_dict()))
+        return report
+
+    def _spec_load_tasks(self, loaded: Spec) -> int:
+        """Item 23: the spec's tasks become this session's task list.
+
+        The rail is replaced, not merged. Once a spec exists its tasks are the plan, and a
+        half-finished model list sitting beside it would be two answers to "what is next".
+        """
+        self.tool_ctx.todos[:] = [
+            {
+                "content": task.label(),
+                "status": "completed" if task.done else "pending",
+                "activeForm": task.text[:80],
+            }
+            for task in loaded.tasks
+        ]
+        self.bus.emit(ev.TodosUpdated(list(self.tool_ctx.todos)))
+        return len(loaded.tasks)
+
+    async def _spec_write(self, path: Path, text: str) -> bool:
+        """Write one document through the same rails as a model Write, always asking first.
+
+        ``force_ask`` is the gate the plan asks for: a step needs a person even in acceptEdits,
+        and a headless run has none, which is why that walk refuses before any draft call.
+        """
+        if path.exists():
+            await self.run_tool_call("Read", {"file_path": str(path)})
+        result = await self.run_tool_call(
+            "Write", {"file_path": str(path), "content": text}, force_ask=True
+        )
+        if result.is_error:
+            self.bus.emit(ev.Notice("warn", f"spec file not written: {result.content}"[:300]))
+            return False
+        return True
+
+    async def _spec_step(
+        self,
+        root: Path,
+        slug: str,
+        idea: str,
+        step: str,
+        caller: Any,
+        target: ModelSpec,
+    ) -> tuple[bool, Step]:
+        """Draft one step, check its shape, and write it only if the person approves.
+
+        Returns whether the walk may continue, with the record of what happened.
+        """
+        rel = f"{SPEC_DIR}/{slug}/{DOC_NAME[step]}"
+        current = await asyncio.to_thread(load_spec, root, slug)
+        if step != "requirements" and (current is None or not current.requirements):
+            return False, Step(
+                step,
+                rel,
+                "skipped",
+                "requirements.md is not on disk yet, so there is nothing to design or task "
+                "out of: /spec <slug> requirements first",
+            )
+        if step == "requirements":
+            prior = idea or (
+                f"REVISE the existing requirements below. Keep every AC id that still applies "
+                f"and keep its number: a test quotes the id, so a renumbered criterion looks "
+                f"like an untested one.\n\n{current.requirements if current else ''}"
+            )
+        elif step == "design":
+            prior = current.requirements if current else ""
+        else:
+            prior = current.text() if current else ""
+        self.bus.emit(ev.SpecStarted(slug, step, target.id))
+        prompt = draft_prompt(step, slug, idea=prior, repo_note=self._repo_note(), prior=prior)
+        try:
+            draft = await asyncio.wait_for(caller(spec_system_prompt(), prompt), DRAFT_TIMEOUT)
+        except TimeoutError:
+            return False, Step(
+                step, rel, "failed", f"the draft gave nothing in {DRAFT_TIMEOUT:.0f} s"
+            )
+        except Exception as exc:  # noqa: BLE001 - a dead model costs the step, not the session
+            return False, Step(
+                step,
+                rel,
+                "failed",
+                f"the draft call could not be made: {type(exc).__name__}: {exc}"[:300],
+            )
+        body = self._clean(strip_fences(draft)) + "\n"
+        if step == "requirements":
+            errors = validate_requirements(body)
+        elif step == "design":
+            errors = validate_design(body, threat_surface(prior))
+        else:
+            errors = validate_tasks(body, current.criteria if current else [])
+        if errors:
+            return False, Step(
+                step,
+                rel,
+                "invalid",
+                "the draft does not match the contract, so nothing was written",
+                errors,
+            )
+        if not await self._spec_write(root / rel, body):
+            return False, Step(
+                step, rel, "refused", "you did not approve this step, so the walk stops here"
+            )
+        return True, Step(step, rel, "written")
+
+    async def _spec_walk(self, root: Path, slug: str, idea: str, steps: list[str]) -> SpecReport:
+        """Run the walk: one draft, one shape check and one approval per step, in order."""
+        started = time.monotonic()
+        if self.permissions.mode == "plan":
+            return self._spec_stop(
+                root,
+                slug,
+                "plan mode is on, and a spec is files: leave plan mode (/plan off) first",
+            )
+        if isinstance(self.approver, ev.DenyAll):
+            return self._spec_stop(
+                root,
+                slug,
+                "this run has no person to approve each step, so it writes nothing and spends "
+                "no draft call: run /spec where you can answer the approval card",
+            )
+        target, note = self.spec_model()
+        if note:
+            self.bus.emit(ev.Notice("warn", note))
+        caller = self._critic_caller(target)
+        before = await asyncio.to_thread(load_spec, root, slug)
+        # The OLD criteria's coverage, read before anything is rewritten: a criterion whose text
+        # moved is owed a rerun of exactly the tests that quoted it while it said the old thing.
+        old_coverage = (
+            await asyncio.to_thread(criterion_coverage, root, before.criterion_ids())
+            if before is not None and "requirements" in steps
+            else {}
+        )
+        report = SpecReport(slug=slug, dir=f"{SPEC_DIR}/{slug}", status="written", model=target.id)
+        for step in steps:
+            go_on, record = await self._spec_step(root, slug, idea, step, caller, target)
+            report.steps.append(record)
+            if not go_on:
+                break
+        after = await asyncio.to_thread(load_spec, root, slug)
+        landed = [record for record in report.steps if record.status == "written"]
+        last = report.steps[-1] if report.steps else None
+        if not landed and last is not None:
+            report.status = last.status
+            report.reason = last.reason or (last.errors[0] if last.errors else "")
+        elif last is not None and last.status != "written":
+            report.status = "partial"
+            report.reason = (
+                f"{last.step} {last.status}: " + "; ".join(last.errors[:3])
+                if last.errors
+                else f"{last.step} {last.status}: {last.reason}"
+            )
+        if after is not None:
+            self.spec = after
+            report.criteria = after.criteria
+            report.tasks = after.tasks
+            report.coverage = await asyncio.to_thread(
+                criterion_coverage, root, after.criterion_ids()
+            )
+            self.spec_coverage = report.coverage
+            report.surface = threat_surface(after.text())
+            report.orphans = after.orphan_criteria()
+            report.refuted = [task.id for task in after.tasks_without_criteria()]
+            report.stale_tasks = [task.id for task in after.uncovered_tasks()]
+            if any(record.step == "tasks" for record in landed) and after.tasks:
+                report.tasks_loaded = self._spec_load_tasks(after)
+            if before is not None and old_coverage:
+                moved = changed_criteria(before.criteria, after.criteria)
+                if moved:
+                    owed = [
+                        node
+                        for cid in moved
+                        for node in old_coverage.get(cid, [])
+                        if node not in self._pending_fix_nodes
+                    ]
+                    self._pending_fix_nodes.extend(owed)
+                    report.reflagged = moved
+                    self.bus.emit(
+                        ev.Notice(
+                            "info",
+                            f"criteria changed ({', '.join(moved)}): the "
+                            f"{len(owed)} test(s) that quoted them are owed a rerun, queued "
+                            "for prove-the-fix",
+                        )
+                    )
+        report.seconds = time.monotonic() - started
+        return self._spec_report(root, report)
+
     def _critic_caller(self, spec: ModelSpec):
         async def caller(system: str, user: str) -> str:
             return await call_model(self.provider, spec, system, user)
@@ -1474,6 +1822,20 @@ class Session:
         """Item 22: fill the six quality rows from this session's evidence. No tests, no model."""
         if not self.settings.assurance_after_turn or not self.written:
             return None
+        spec_data: dict[str, Any] | None = None
+        if self.spec is not None:
+            # Measured fresh, not remembered: a test deleted during this turn must show up as a
+            # gap in the very next card. That is plan item 23's closing test.
+            ids = self.spec.criterion_ids()
+            if ids:
+                scan_root = await asyncio.to_thread(repo_root, self.cwd)
+                self.spec_coverage = await asyncio.to_thread(criterion_coverage, scan_root, ids)
+            spec_data = {
+                "slug": self.spec.slug,
+                "dir": self.spec.directory,
+                "criteria": ids,
+                "coverage": self.spec_coverage,
+            }
         try:
             card = await build_card(
                 self.cwd,
@@ -1485,6 +1847,7 @@ class Session:
                 saw_test_run=self._saw_test_run,
                 saw_test_pass=self._saw_test_pass,
                 scans=self.settings.assurance_scans,
+                spec=spec_data,
             )
         except Exception as exc:  # noqa: BLE001 - a broken card is a notice, never a silent pass
             self.bus.emit(
