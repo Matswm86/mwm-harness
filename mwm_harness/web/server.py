@@ -66,7 +66,18 @@ LIVE_EVENTS = (
 MAX_LIVE_EVENTS = 2000
 # Slash commands that run as background tasks. A review is a model call over the turn's diff,
 # so it belongs here with the checks: it can take a minute and must not block the socket reader.
-SIDE_COMMANDS = ("/check", "/runit", "/trace", "/diagnose", "/review")
+# /fix reruns recorded failing tests under pytest; /assurance runs scans (detect-secrets,
+# pip-audit, semgrep, a PyPI lookup) that each need seconds of their own.
+SIDE_COMMANDS = (
+    "/check",
+    "/runit",
+    "/trace",
+    "/diagnose",
+    "/review",
+    "/flags",
+    "/fix",
+    "/assurance",
+)
 CLOSED_TABS_KEPT = 10
 # The allow-list key an "always" answer to a code-pane save is remembered under. It is not a tool
 # name on purpose: answering "always" there must stop asking about Mats's own saves, and must not
@@ -138,7 +149,9 @@ class CapturedOutput:
     def __init__(self) -> None:
         self.rows: list[str] = []
 
-    def line(self, text: str = "") -> None:
+    def line(self, text: str = "", stamp: bool = True) -> None:
+        # stamp is accepted and ignored: the page timestamps rows itself; some commands
+        # (hardware, the assurance card) print through this stand-in with stamp=False.
         self.rows.append(text)
 
 

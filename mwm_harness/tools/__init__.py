@@ -1,5 +1,6 @@
 """Built-in tools. Names match Claude Code's so existing hook matchers keep working."""
 
+from mwm_harness.tools.assurance import AssuranceReport
 from mwm_harness.tools.base import Tool, ToolContext, ToolResult
 from mwm_harness.tools.files import Edit, Glob, Grep, Read, Write
 from mwm_harness.tools.judge import Judge
@@ -19,6 +20,7 @@ def default_tools(web_allow_private: bool = False) -> dict[str, Tool]:
         Grep(),
         TodoWrite(),
         ExitPlanMode(),
+        AssuranceReport(),
         WebFetch(web_allow_private),
         WebSearch(),
         Judge(),

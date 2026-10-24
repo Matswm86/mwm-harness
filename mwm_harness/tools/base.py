@@ -41,6 +41,8 @@ class ToolContext:
     stamps: dict[Path, int] = field(default_factory=dict)
     todos: list[dict[str, Any]] = field(default_factory=list)
     plan_handler: Callable[[str], Awaitable[bool]] | None = None  # set by the session
+    # The AssuranceReport tool's sink: fills this session's assurance card (plan item 22).
+    assurance_handler: Callable[[list[dict[str, Any]]], Awaitable[str]] | None = None
 
     def resolve(self, file_path: str) -> Path:
         path = Path(file_path).expanduser()

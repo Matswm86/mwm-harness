@@ -219,6 +219,40 @@ class ReviewComment(Event):
 
 
 @dataclass
+class BugFlagsFinished(Event):
+    """Item 30: the harness's own looks over the files a turn changed (``bugflag.py``).
+
+    Flags are advice: nothing was edited, blocked or reverted because of them.
+    """
+
+    root: str
+    report: dict[str, Any]
+
+
+@dataclass
+class FixProved(Event):
+    """Item 30 (c): the tests that failed were rerun alone after an editing turn.
+
+    ``result["proved"]`` is True only when every previously failing node id passed alone.
+    """
+
+    root: str
+    result: dict[str, Any]
+
+
+@dataclass
+class AssuranceFinished(Event):
+    """Item 22: the assurance card for the turn's changes, one row per quality.
+
+    ``card["done_allowed"]`` is the gate: a FAIL or an unfilled row holds the turn back from
+    being presented as done. Rows the model filled carry ``model_written``.
+    """
+
+    root: str
+    card: dict[str, Any]
+
+
+@dataclass
 class PlanProposed(Event):
     plan: str
 

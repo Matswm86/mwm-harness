@@ -17,6 +17,7 @@ from typing import Any
 
 from mwm_harness import events as ev
 from mwm_harness import hardware, postmortem
+from mwm_harness.assurance import card_from_dict
 from mwm_harness.config import EFFORTS, ModelSpec
 from mwm_harness.jev import format_report, report
 from mwm_harness.loop import Session
@@ -54,6 +55,11 @@ HELP = """\
 /trace TEST           run one test (pytest node id) and list the calls it made, with argument values
 /diagnose [text]      where a failing run comes from: the last failure this session saw, or TEXT
                       (also runs after a turn whose checks or tests failed; advice, never a fix)
+/flags                bug flags on the changed files: swallowed errors, silent failures,
+                      queries in loops (also runs after each editing turn; advice, never a block)
+/fix                  prove-the-fix: rerun this session's recorded failing tests alone
+/assurance            the six-row assurance card: a FAIL or an empty row holds the turn back
+                      from being presented as done (also builds after each editing turn)
 /review [file ...]    a second reader on the turn's diff: a walkthrough line per file plus comments
                       with severity. Advice only, nothing is applied (also runs after an editing turn)
 /review-send N [note] send comment N of the last review as your next turn, quoting its file:line
@@ -158,6 +164,31 @@ async def run_async_command(session: Session, text: str, out: Any) -> bool:
         return True
     if name == "/diagnose":
         await session.diagnose_command(argument)
+        return True
+    if name == "/flags":
+        files = await session.changed_files()
+        flag_report = await session.bug_flags(files)
+        if flag_report.files == 0:
+            out.line("[flags] no changed Python file to look at")
+        return True
+    if name == "/fix":
+        proof = await session.prove_fix()
+        if proof is None:
+            out.line(
+                "[fix] nothing on record: run the failing test, then edit, then this "
+                "reruns exactly those tests alone"
+            )
+        return True
+    if name == "/assurance":
+        if session.assurance is None:
+            if await session.assurance_card(session.last_checks) is None:
+                out.line(
+                    "[assurance] no card yet: nothing was written this session, "
+                    "or assurance_after_turn is off"
+                )
+            return True
+        for row in session.assurance.render().splitlines():
+            out.line(row, stamp=False)
         return True
     if name == "/mcp" and "refresh" in argument.split():
         await session.connect_mcp(refresh=True)
@@ -301,8 +332,59 @@ class Printer:
             for row in diagnosis_lines(event.diagnosis):
                 code = RED if row.startswith("[diagnose] FAILED") else DIM
                 self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.BugFlagsFinished):
+            for index, row in enumerate(bugflag_lines(event.report)):
+                code = DIM if index == 0 else (RED if "parse_error" in row else YELLOW)
+                self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.FixProved):
+            proved = bool(event.result.get("proved"))
+            for row in fix_lines(event.result):
+                code = DIM if proved or event.result.get("status") != "ran" else RED
+                self.line(self.paint(code, row), event)
+        elif isinstance(event, ev.AssuranceFinished):
+            for row in card_from_dict(event.card).render().splitlines():
+                if ": FAIL" in row or "DONE HELD" in row:
+                    code = RED
+                elif "NOT RUN" in row or ": EMPTY" in row:
+                    code = YELLOW
+                else:
+                    code = DIM
+                self.line(self.paint(code, row), event)
         elif isinstance(event, ev.TurnEnded) and event.reason != "done":
             self.line(self.paint(YELLOW, f"[turn ended: {event.reason}]"), event)
+
+
+def bugflag_lines(report: dict[str, Any]) -> list[str]:
+    """The AST flags over this turn's changed files: advice, nothing was blocked or edited."""
+    flags = report.get("flags") or []
+    files = report.get("files", 0)
+    if not flags:
+        return [f"[flags] none in {files} changed file(s)"]
+    counts = ", ".join(f"{kind}:{n}" for kind, n in report.get("counts", {}).items())
+    rows = [f"[flags] {len(flags)} in {files} file(s) ({counts}); advice only"]
+    for flag in flags[:20]:
+        where = f"{flag['file']}:{flag['line']}"
+        rows.append(f"  {where} {flag['kind']}: {str(flag['message'])[:180]}")
+    if len(flags) > 20:
+        rows.append(f"  ... {len(flags) - 20} more")
+    return rows
+
+
+def fix_lines(result: dict[str, Any]) -> list[str]:
+    """The prove-the-fix rerun: PROVED only when every recorded failing test passes alone."""
+    if result.get("proved"):
+        return [
+            f"[fix] PROVED: {len(result.get('passed', []))} formerly failing test(s) "
+            f"pass alone ({result.get('seconds', 0)}s)"
+        ]
+    if result.get("status") != "ran":
+        return [f"[fix] {result.get('status', 'not_run').upper()}: {result.get('reason', '')}"]
+    rows = [f"[fix] NOT PROVED: {str(result.get('summary', ''))[:160]}"]
+    for node in result.get("still_failing", [])[:8]:
+        rows.append(f"  still failing: {node}")
+    for node in result.get("missing", [])[:8]:
+        rows.append(f"  test file gone, proves nothing: {node}")
+    return rows
 
 
 def diagnosis_lines(diagnosis: dict[str, Any]) -> list[str]:

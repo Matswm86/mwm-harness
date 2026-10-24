@@ -240,6 +240,21 @@ class Settings:
     # Diagnoses one task may ask for before the harness stops and names the failure to the
     # person instead of spending more requests on it. 0 means no cap.
     diagnose_rounds: int = 3
+    # Bug flags (plan item 30): after a turn that wrote Python, the harness's own AST looks
+    # (swallowed exception, silent failure, query in a loop) run over the changed files. They
+    # are advice and feed the assurance card's reliable row; nothing is blocked by a flag.
+    bug_flags: bool = True
+    # Prove-the-fix (plan item 30 (c)): when a turn edited files after tests failed, exactly
+    # those failing node ids are rerun alone and the PASS/FAIL lands beside the turn.
+    prove_fix_after_turn: bool = True
+    # Assurance card (plan item 22): after a turn that wrote files, the six quality rows are
+    # filled from the evidence this session has (checks, run-it, bug flags, scans). Building
+    # it runs no tests and no model: rows with no evidence say NOT RUN, never pass.
+    assurance_after_turn: bool = True
+    # The external scans the safe row may run when a turn touched dependencies or code:
+    # detect-secrets/bandit/pip-audit/PyPI existence of newly added requirement names. A slow
+    # box or an offline session can switch them off; the row then says NOT RUN honestly.
+    assurance_scans: bool = True
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

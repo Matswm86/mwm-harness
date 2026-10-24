@@ -267,5 +267,71 @@ async def _probe(python: str, module: str, root: Path) -> bool:
     return await asyncio.to_thread(_has_module, python, module, root)
 
 
+async def rerun_nodes(root: Path, node_ids: list[str], timeout: float = 300.0) -> dict[str, Any]:
+    """Prove-the-fix (plan item 30 (c)): rerun exactly these failing tests, alone.
+
+    Returns ``{status, proved, node_ids, passed, still_failing, missing, summary, seconds,
+    tail}``. ``proved`` is True only when the rerun exits 0 and every node id is accounted
+    for: a test that disappeared (renamed, deleted, not collected) is ``missing``, never
+    silently ``passed``, because a deleted test proves nothing.
+    """
+    python = _repo_python(root)
+    wanted = list(dict.fromkeys(node_ids))
+    started = time.monotonic()
+    if not wanted:
+        return {
+            "status": "not_run",
+            "proved": False,
+            "node_ids": [],
+            "reason": "no failing tests on record",
+        }
+    if not await _probe(python, "pytest", root):
+        return {
+            "status": "not_run",
+            "proved": False,
+            "node_ids": wanted,
+            "reason": f"pytest missing in {python}",
+        }
+    argv = [python, "-m", "pytest", "-q", "-rfEs", "-p", "no:cacheprovider", *wanted]
+    code, output = await exec_capped(argv, root, timeout)
+    base: dict[str, Any] = {
+        "node_ids": wanted,
+        "seconds": round(time.monotonic() - started, 2),
+        "summary": _summary(output),
+    }
+    if code is None:
+        return {
+            "status": "timeout",
+            "proved": False,
+            "reason": f"rerun over {timeout:g} s",
+            "tail": _tail(output),
+            **base,
+        }
+    reported = re.findall(r"^(?:FAILED|ERROR)\s+(\S+)", output, re.MULTILINE)
+    still = [
+        n
+        for n in wanted
+        if any(n == r or n.startswith(r + "::") or r.startswith(n) for r in reported)
+    ]
+    missing: list[str] = []
+    for n in wanted:
+        if n in still:
+            continue
+        path = n.split("::")[0]
+        if path and not (root / path).is_file():
+            missing.append(n)
+    passed = [n for n in wanted if n not in still and n not in missing]
+    proved = code == 0 and not still and not missing
+    return {
+        "status": "ran",
+        "proved": proved,
+        "passed": passed,
+        "still_failing": still,
+        "missing": missing,
+        "tail": "" if proved else _tail(output),
+        **base,
+    }
+
+
 def as_dict(result: RunItResult | TraceResult) -> dict[str, Any]:
     return asdict(result)

@@ -18,6 +18,9 @@ from typing import Any
 from mwm_harness import codemap
 from mwm_harness import events as ev
 from mwm_harness.agents import Agent, TaskTool, agent_roots, load_agents, resolve_model
+from mwm_harness.assurance import Card as AssuranceCard
+from mwm_harness.assurance import build_card
+from mwm_harness.bugflag import FlagReport, failed_node_ids, flag_files, n_plus_one
 from mwm_harness.checks import CheckConfigError, CheckResult, as_dicts, repo_root, run_checks
 from mwm_harness.config import (
     EFFORTS,
@@ -72,6 +75,7 @@ from mwm_harness.runit import (
     changed_coverage,
     git_changed,
     is_test_file,
+    rerun_nodes,
     trace_test,
 )
 from mwm_harness.runit import as_dict as runit_dict
@@ -275,6 +279,18 @@ class Session:
         self.diagnosis: Diagnosis | None = None  # the last failure diagnosis, if any failed
         self.diagnose_budget = DiagnoseBudget(limit=0)  # set per turn in _turn
         self._test_failure = ""  # the newest test-shaped failure seen in a tool result this turn
+        # Item 30: the failing node ids from the last test-shaped failure, kept between turns
+        # until a prove-the-fix rerun passes them; the flag report and rerun of the last turn.
+        self._pending_fix_nodes: list[str] = []
+        self.last_flags = FlagReport()  # the method bug_flags() writes its newest report here
+        self.proof_of_fix: dict[str, Any] | None = None
+        self.last_checks: list[CheckResult] = []  # newest run_checks() results, for /assurance
+        # Item 22: evidence for the assurance card and the card itself, newest turn.
+        self._saw_test_run = False
+        self._saw_test_pass = False
+        self._last_runit: dict[str, Any] | None = None
+        self.assurance: AssuranceCard | None = None
+        self.tool_ctx.assurance_handler = self.assurance_report
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -631,6 +647,12 @@ class Session:
         self._edited_since_run = False
         self.written: list[Path] = []
         self._test_failure = ""
+        self._fix_edited = False
+        self.proof_of_fix = None
+        # The assurance card describes THIS turn: a test run in an earlier turn is not evidence
+        # that nobody checked today's edit, so the run/pass witnesses start empty each turn.
+        self._saw_test_run = False
+        self._saw_test_pass = False
         # The diagnosis of the turn before this one arrives as one meta message, and it is spent
         # here: repeating it on every request would keep a stale failure in every later prompt.
         self.diagnose_budget.limit = self.settings.diagnose_rounds
@@ -730,6 +752,7 @@ class Session:
                 results = await self.run_checks()
                 await self._diagnose_turn(results)
                 await self._review_turn()
+                await self._post_turn_looks(results)
                 return self._end("done", message.text())
             stop_blocks += 1
             self.bus.emit(ev.HookBlocked("Stop", outcome.reason))
@@ -742,6 +765,7 @@ class Session:
                 )
                 await self.run_checks()
                 await self._review_turn()
+                await self._post_turn_looks([])
                 return self._end("stop_blocks_exhausted", message.text())
             self._add(Message("user", f"Stop hook feedback:\n{outcome.reason}", is_meta=True))
 
@@ -900,24 +924,56 @@ class Session:
 
         A failing Bash run that reads like a test also keeps its output for the diagnosis at the
         end of the turn; a test command that passes clears it, so a failure the model already
-        fixed is not diagnosed after the fact.
+        fixed is not diagnosed after the fact. The failing node ids are kept between turns for
+        the prove-the-fix rerun (item 30 (c)), and a passing test run is recorded as evidence
+        for the assurance card's correct row (item 22).
         """
         name = call["name"]
         if name in LOOK_TOOLS:
             self._blind_fixes = 0
         elif name in EDIT_TOOLS and not result.is_error:
             self._edited_since_run = True
+            if self._pending_fix_nodes:
+                self._fix_edited = True
         elif name == "Bash":
             command = str(call["input"].get("command") or "")
             if not result.is_error:
                 self._blind_fixes = 0
                 if is_test_command(command):
                     self._test_failure = ""
+                    self._saw_test_run = True
+                    self._saw_test_pass = True
+                    if self._pending_fix_nodes:
+                        self._pending_fix_nodes = []
+                        self.proof_of_fix = {
+                            "status": "ran",
+                            "proved": True,
+                            "node_ids": [],
+                            "passed": [],
+                            "still_failing": [],
+                            "missing": [],
+                            "summary": "the model reran the tests itself",
+                            "seconds": 0.0,
+                            "tail": "",
+                            "by": "model",
+                        }
             else:
                 if self._edited_since_run:
                     self._blind_fixes += 1
                 if is_test_failure(result.content):
                     self._test_failure = result.content
+                    self._saw_test_run = True
+                    self._saw_test_pass = False
+                    nodes = failed_node_ids(result.content)
+                    if nodes:
+                        self._pending_fix_nodes = nodes
+                        self.bus.emit(
+                            ev.Notice(
+                                "info",
+                                f"{len(nodes)} test(s) failed; after your next edit the harness "
+                                "reruns exactly these to prove the fix (item 30)",
+                            )
+                        )
             self._edited_since_run = False
 
     async def _run_one_tool(
@@ -1062,6 +1118,7 @@ class Session:
             self.bus.emit(ev.Notice("error", f"checks not run: {exc}"))
             return []
         self.bus.emit(ev.ChecksFinished(str(root), as_dicts(results)))
+        self.last_checks = results
         return results
 
     def undo(self) -> UndoReport:
@@ -1341,18 +1398,142 @@ class Session:
         self.bus.emit(ev.Notice("info", f"run-it: running the tests for {len(files)} file(s)"))
         result = await changed_coverage(root, files, pytest_args)
         data = runit_dict(result)
+        self._last_runit = data
         self.bus.emit(ev.RunItFinished(str(root), data))
         if result.status == "ran" and not result.tests_passed:
+            self._saw_test_run = True
+            self._saw_test_pass = False
             self._test_failure = run_failure_text(data)
+            self._pending_fix_nodes = failed_node_ids(result.tail)
             await self._diagnose_turn([], force=True)
         elif result.status == "ran":
+            self._saw_test_run = True
+            self._saw_test_pass = result.tests_passed
             self._test_failure = ""
+            self._pending_fix_nodes = []
         return result
+
+    async def bug_flags(self, files: list[Path] | None = None) -> FlagReport:
+        """Item 30 (a): the harness's own AST looks over the files this turn changed."""
+        paths = list(files) if files is not None else list(self.written)
+        report = FlagReport()
+        py = [p for p in paths if p.suffix == ".py"]
+        if not py or not self.settings.bug_flags:
+            self.last_flags = report
+            return report
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        report = await asyncio.to_thread(flag_files, root, py)
+        self.last_flags = report
+        self.bus.emit(
+            ev.BugFlagsFinished(
+                str(root),
+                {"flags": report.as_dicts(), "counts": report.counts(), "files": report.files},
+            )
+        )
+        for flag in report.flags:
+            self.bus.emit(ev.Notice("info", f"bug flag {flag.label()}"))
+        return report
+
+    async def prove_fix(self) -> dict[str, Any] | None:
+        """Item 30 (c): after an edit that followed a failing test, rerun exactly those tests."""
+        if (
+            not self.settings.prove_fix_after_turn
+            or not self._pending_fix_nodes
+            or not self._fix_edited
+        ):
+            return None
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        self.bus.emit(
+            ev.Notice(
+                "info",
+                f"prove-the-fix: rerunning {len(self._pending_fix_nodes)} failed test(s) alone",
+            )
+        )
+        try:
+            proof = await rerun_nodes(root, self._pending_fix_nodes)
+        except Exception as exc:  # noqa: BLE001 - a broken rerun is reported, never swallowed
+            self.bus.emit(
+                ev.Notice("error", f"prove-the-fix not run ({type(exc).__name__}: {exc})"[:300])
+            )
+            return None
+        self.proof_of_fix = proof
+        self.bus.emit(ev.FixProved(str(root), proof))
+        if proof.get("proved"):
+            self._pending_fix_nodes = []
+            self._test_failure = ""
+            self._saw_test_pass = True
+            self.bus.emit(
+                ev.Notice("info", f"prove-the-fix: PASS, {len(proof['passed'])} test(s) pass alone")
+            )
+        else:
+            bad = proof.get("still_failing") or proof.get("missing") or proof["node_ids"]
+            self.bus.emit(ev.Notice("error", "prove-the-fix: still failing: " + ", ".join(bad[:6])))
+        return proof
+
+    async def assurance_card(self, checks: list[CheckResult]) -> AssuranceCard | None:
+        """Item 22: fill the six quality rows from this session's evidence. No tests, no model."""
+        if not self.settings.assurance_after_turn or not self.written:
+            return None
+        try:
+            card = await build_card(
+                self.cwd,
+                list(self.written),
+                checks=checks,
+                runit=self._last_runit,
+                flags=self.last_flags,
+                fix=self.proof_of_fix,
+                saw_test_run=self._saw_test_run,
+                saw_test_pass=self._saw_test_pass,
+                scans=self.settings.assurance_scans,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken card is a notice, never a silent pass
+            self.bus.emit(
+                ev.Notice("error", f"assurance card not built ({type(exc).__name__}: {exc})"[:300])
+            )
+            return None
+        self.assurance = card
+        self.bus.emit(ev.AssuranceFinished(card.root, card.as_dict()))
+        if not card.done_allowed:
+            self.bus.emit(
+                ev.Notice("warn", card.gate_line() + ": fix it or fill the model-written rows")
+            )
+        return card
+
+    async def assurance_report(self, rows: list[dict[str, Any]]) -> str:
+        """The AssuranceReport tool's sink: the model fills only its three rows."""
+        if self.assurance is None:
+            raise ValueError(
+                "no assurance card is built yet: it lands at the end of an editing turn"
+            )
+        for entry in rows:
+            if not isinstance(entry, dict):
+                raise ValueError("each row must be {quality, status, reason}")
+            self.assurance.fill(
+                str(entry.get("quality", "")),
+                str(entry.get("status", "")),
+                str(entry.get("reason", "")),
+            )
+        self.bus.emit(ev.AssuranceFinished(self.assurance.root, self.assurance.as_dict()))
+        return (
+            f"card updated (rows you wrote are labelled model-written): "
+            f"{self.assurance.gate_line()}"
+        )
+
+    async def _post_turn_looks(self, checks: list[CheckResult]) -> None:
+        """The turn's closing passes: bug flags (30 a), prove-the-fix (30 c), card (22)."""
+        await self.bug_flags()
+        await self.prove_fix()
+        await self.assurance_card(checks)
 
     async def trace(self, test: str) -> TraceResult:
         root = await asyncio.to_thread(repo_root, self.cwd)
         result = await trace_test(root, test)
-        self.bus.emit(ev.TraceFinished(str(root), runit_dict(result)))
+        data = runit_dict(result)
+        repeats = n_plus_one(data)
+        data["n_plus_one"] = [flag.as_dict() for flag in repeats]
+        for flag in repeats:
+            self.bus.emit(ev.Notice("info", f"bug flag {flag.label()}"))
+        self.bus.emit(ev.TraceFinished(str(root), data))
         return result
 
     async def _approve(self, name: str, tool_input: dict[str, Any], reason: str) -> bool:

@@ -1101,6 +1101,34 @@ function diagnoseFinished(e) {
   setLive(false, "read the failure");
   note("info", `failure diagnosis (${d.source}): ${lines.join(" · ")}`);
 }
+/* ------- items 30 + 22: bug flags, prove-the-fix, assurance card ------- */
+const assuranceByTab = new Map();  // tab id -> last AssuranceFinished card
+const ASSUR_WORD = { pass: "PASS", fail: "FAIL", not_run: "NOT RUN", na: "N/A", "": "EMPTY" };
+function assuranceGate(c) {
+  const held = c.done_allowed ? "done allowed" : `DONE HELD on ${c.holding.join(", ")}`;
+  return c.not_run.length ? `${held} (${c.not_run.join(", ")} NOT RUN)` : held;
+}
+function bugFlagsFinished(e) {
+  const f = e.report.flags || [];
+  const counts = Object.entries(e.report.counts || {}).map(([k, n]) => `${k}:${n}`).join(", ");
+  if (turn) turn.flags = f.length ? `${f.length} flag${f.length === 1 ? "" : "s"} (${counts})` : "none";
+  if (!f.length) { note("info", `bug flags: none in ${e.report.files} changed file(s); advice only`); return; }
+  const rows = f.slice(0, 8).map((fl) => `${fl.file}:${fl.line} ${fl.kind}: ${String(fl.message).slice(0, 90)}`);
+  note("warn", `bug flags in ${e.report.files} file(s) (${counts}; advice, nothing blocked): ${rows.join(" · ") || "no detail"}${f.length > 8 ? ` … +${f.length - 8} more` : ""}`);
+}
+function fixProved(e) {
+  const r = e.result;
+  if (turn) turn.fix = r.proved ? "proved" : (r.status === "ran" ? "NOT proved" : r.status);
+  if (r.proved) { note("info", `prove-the-fix: PASS, ${(r.passed || []).length} formerly failing test(s) pass alone (${r.seconds}s)`); return; }
+  if (r.status !== "ran") { note("warn", `prove-the-fix ${r.status}: ${r.reason || ""}`); return; }
+  const bad = (r.still_failing || []).concat(r.missing || []);
+  note("warn", `prove-the-fix: NOT PROVED; still failing or gone: ${bad.slice(0, 6).join(", ") || r.summary}`);
+}
+function assuranceFinished(e) {
+  assuranceByTab.set(session, e.card);
+  if (turn) turn.assurance = e.card;
+  note(e.card.done_allowed ? "info" : "warn", `assurance: ${assuranceGate(e.card)}`);
+}
 $("runit").onclick = () => { setLive(true, "running the tests under coverage"); send({ type: "prompt", text: "/runit" }); };
 $("desk").onclick = () => { setLive(true, "asking the second reader about this turn"); send({ type: "prompt", text: "/review" }); };
 function checksStarted(e) { setLive(true, `checking ${e.files.length} file${e.files.length === 1 ? "" : "s"}`); $("checksum").textContent = "running"; }
@@ -1134,10 +1162,12 @@ function recordOutput(e) {
   if (!turn) { const asked = [...document.querySelectorAll("#log .u")].pop(); turn = { prompt: asked ? asked.textContent : "", tools: null, errors: 0, files: new Set() }; }
   const text = (e.text || "").trim();
   const first = (text.split(/\n/).find((l) => l.trim()) || "").replace(/^[#*\s]+|\*+$/g, "").replace(/`/g, "");
-  const tag = e.reason === "done" ? (turn.errors ? "kill" : "pass") : "kill";
+  const held = !!(turn.assurance && !turn.assurance.done_allowed);
+  const tag = e.reason === "done" ? ((turn.errors || held) ? "kill" : "pass") : "kill";
   const card = { tab: session, time: clock("Europe/Oslo"), prompt: turn.prompt, verdict: first || `turn ended: ${e.reason}`,
-    tag, label: e.reason === "done" ? (turn.errors ? "DONE, ERRORS" : "DONE") : e.reason.toUpperCase(),
-    tools: turn.tools, errors: turn.errors, files: [...turn.files], checks: turn.checks || "", text };
+    tag, label: e.reason === "done" ? (turn.errors ? "DONE, ERRORS" : held ? "DONE, ASSURANCE HELD" : "DONE") : e.reason.toUpperCase(),
+    tools: turn.tools, errors: turn.errors, files: [...turn.files], checks: turn.checks || "",
+    flags: turn.flags || "", fix: turn.fix || "", assurance: turn.assurance || null, text };
   const list = outputs.get(session) || []; list.unshift(card); outputs.set(session, list.slice(0, 30));
   drawOutputs(); turn = null;
   const n = $("vresult").querySelector(".n") || $("vresult").appendChild(el("span", "n"));
@@ -1147,7 +1177,7 @@ function drawOutputs() {
   const list = outputs.get(session) || [], ul = $("outputs"); ul.replaceChildren();
   list.forEach((o) => {
     const li = el("li", "click"); li.tabIndex = 0;
-    li.append(el("span", `vt verdict-tag ${o.tag}`, o.tag === "pass" ? "DONE" : o.label.startsWith("DONE") ? "ERR" : "STOP"), el("span", null, o.verdict), el("small", null, o.time));
+    li.append(el("span", `vt verdict-tag ${o.tag}`, o.tag === "pass" ? "DONE" : (o.assurance && !o.assurance.done_allowed && !o.errors) ? "HELD" : o.label.startsWith("DONE") ? "ERR" : "STOP"), el("span", null, o.verdict), el("small", null, o.time));
     li.onclick = () => openOutput(o); li.onkeydown = (ev) => { if (ev.key === "Enter") openOutput(o); };
     ul.append(li);
   });
@@ -1163,6 +1193,13 @@ function openOutput(o) {
   row("tool calls", o.tools === null ? "not counted: the turn began before this page connected" : `${o.tools}${o.errors ? `, ${o.errors} failed` : ""}`);
   row("files", o.files.length ? `${o.files.length} written` : "none written");
   if (o.checks) row("checks", o.checks);
+  if (o.flags) row("bug flags", o.flags);
+  if (o.fix) row("prove-the-fix", o.fix);
+  if (o.assurance) {
+    row("assurance", assuranceGate(o.assurance));
+    o.assurance.rows.forEach((r) => row(r.quality,
+      `${ASSUR_WORD[r.status] || "EMPTY"}${r.reason ? `: ${r.reason}` : ""}${r.model_written ? " (model-written)" : ""}`));
+  }
   const files = el("div", "files");
   o.files.forEach((p) => { const b = el("button", null, p); b.type = "button"; b.onclick = () => openFile(p); files.append(b); });
   box.append(kicker, el("h3", null, o.verdict), ul);
@@ -1550,6 +1587,9 @@ const handlers = {
   TraceFinished: traceFinished,
   DiagnoseStarted: diagnoseStarted,
   DiagnoseFinished: diagnoseFinished,
+  BugFlagsFinished: bugFlagsFinished,
+  FixProved: fixProved,
+  AssuranceFinished: assuranceFinished,
   ReviewStarted: reviewStarted,
   ReviewFinished: reviewFinished,
   ReviewComment: () => {},  // the desk clicked remember: the note below is the confirmation

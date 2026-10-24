@@ -484,6 +484,54 @@ two changes credited to one. The harness carries that part as procedure.
   reply is cut at 2000 tokens (`--max-tokens`, 0 = no cap; a `cmd:` model is not
   capped), and `--resume FILE` continues an interrupted run from its result file.
 
+## Bug flags, prove-the-fix, and the assurance card
+
+After any turn where the model touched files, the harness takes three looks of its
+own. They are looks: the flags advise, the proof reruns, the card holds `DONE`,
+nothing here edits code.
+
+- **Bug flags** (`/flags`, `bug_flags` in settings, on by default). Four AST looks
+  at the Python files this turn changed: `swallowed_exception` (an `except` that is
+  only `pass`, or catches `Exception` with no raise and no log), `silent_failure`
+  (an `except` returning `None`/`[]`/`{}`/`0` unlogged, the shape the workspace
+  no-silent-failures rule bans), `query_in_loop` (a DB or HTTP call written inside
+  a `for`/`while` body), and `parse_error` (a file that does not parse is flagged,
+  never skipped). `n_plus_one` is the dynamic half: a run-it trace of one test that
+  enters the same repo function 3+ times with the same SQL or URL argument. The
+  turn-end pass emits a `BugFlagsFinished` event; the panel lists the hits under
+  the turn's output.
+- **Prove-the-fix** (`/fix`, `prove_fix_after_turn`). When a pytest run fails
+  during a turn, the harness records the failing node ids (including bare
+  `ERROR path.py` collection errors). If the model then edits files, the turn-end
+  pass reruns exactly those tests, alone, in the repo's own Python. `proved` is
+  true only when the rerun exits 0 and every recorded node is accounted for: a
+  test that vanished (deleted or renamed) comes back `missing`, never silently
+  `passed`, because deleting a test proves nothing. A passing test run the model
+  itself claims, without a rerun on record, is stored as `by: "model"` and is not
+  proof. The card's `correct` row counts a proved fix as green coverage.
+- **Assurance card** (`/assurance`, `assurance_after_turn`). Six rows answer one
+  question before the model may say it is done: *safe, correct, reliable,
+  performant, scalable, fit for operation*. Three rows come only from code
+  evidence: `safe` (secret scan, dependency audit when a deps file changed, a
+  PyPI existence lookup that FAILs and names any package that does not exist,
+  semgrep or bandit when installed, an OWASP LLM checklist note when the diff
+  touches a model gateway), `correct` (test chain status, failing checks, a
+  missing prove-the-fix, run-it line coverage), `reliable` (a silent-failure or
+  swallowed-exception flag FAILs it; advice kinds only show as evidence). The
+  model may fill only `performant`, `scalable` and `fit for operation`, as `na`
+  or `pass` with a reason, and those rows are labelled model-written; a
+  `ValueError` refuses the model touching the other three. `NOT RUN` with a
+  reason is honest and does not hold; a `FAIL` or a still-empty row holds `DONE`
+  (`done_allowed` false; the panel's chip reads HELD and its detail shows every
+  row's status and who wrote it). Scans that need a binary use it only if
+  installed (`assurance_scans` off skips them); the row then says NOT RUN and
+  names what is missing. One deviation from the plan is honest and permanent:
+  the PyPI lookup checks existence and reports the package's age, because the
+  public JSON API no longer exposes download counts, so there is no popularity
+  floor to check.
+
+Tests: `tests/test_bugflag.py`, `tests/test_assurance.py` (37, all offline).
+
 ## Setup
 
 ```bash
