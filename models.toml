@@ -11,7 +11,10 @@ key_env = "MWM_HARNESS_API_KEY"
 [models."qwen3.8-max"]
 family = "qwen"
 context_window = 1000000
-soft_budget = 200000
+# 40% of the window, matched 2026-10-24 to Qwen Code's context.autoCompactThreshold
+# 0.4 in ~/MWM/.qwen/settings.json. It was 200000 here and 0.15 (150k) there, which
+# compacted mid-arc: 10 compactions across 5 Qwen Code sessions on 10-24.
+soft_budget = 400000
 thinking_field = "enable_thinking"
 # Measured 2026-10-21: spike/spike_vision.py on the payg twin read the two drawn
 # range levels of a gold frame (1.13245 / 1.17879, five decimals, not round axis
@@ -19,6 +22,14 @@ thinking_field = "enable_thinking"
 # frame. COMPAT.md has the table.
 vision = true
 
+# DEFECT, found 2026-10-24, left unfixed on purpose. These two set soft_budget
+# without context_window, so both inherit the 128000 default from config.py and
+# their budget sits ABOVE their window: ContextMeter.over_budget can never fire and
+# meter.line() prints the fraction against 128k. Real windows per Qwen Code's
+# provider registry are 262144 (kimi) and 1000000 (glm-5.2). Neither is in live use
+# (~/.config/mwm-harness/settings.toml agent_models maps to qwen3.8-max,
+# qwen3.8-flash and glm-5.3 as critic), so a fix today would be an unmeasured guess
+# about a model nobody runs. Set context_window explicitly before using either.
 [models."kimi-k2.7-code"]
 family = "kimi"
 soft_budget = 200000
@@ -34,7 +45,10 @@ soft_budget = 200000
 [models."qwen3.8-flash"]
 family = "qwen"
 context_window = 1000000
-soft_budget = 200000
+# Same 40% as qwen3.8-max: one window, one ratio to remember. The two payg- entries
+# below stay at 200000 because that lane is metered per token, so their budget is
+# spend per request rather than just context.
+soft_budget = 400000
 thinking_field = "enable_thinking"
 # Measured 2026-10-21 on the payg twin: read the same gold frame's drawn levels
 # exactly, four times faster than qwen3.8-max. COMPAT.md has the table.
