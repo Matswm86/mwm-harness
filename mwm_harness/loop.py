@@ -29,6 +29,16 @@ from mwm_harness.config import (
 )
 from mwm_harness.context import ContextMeter, build_system_prompt
 from mwm_harness.costwatch import TurnCostWatch, log_spike
+from mwm_harness.diagnose import (
+    DiagnoseBudget,
+    Diagnosis,
+    check_failure_text,
+    format_changes,
+    is_test_command,
+    is_test_failure,
+    run_diagnosis,
+    run_failure_text,
+)
 from mwm_harness.hooks import HookEngine, load_registrations
 from mwm_harness.mcp_client import HARNESS_SECRET_ENV, McpManager
 from mwm_harness.messages import (
@@ -262,6 +272,9 @@ class Session:
         self.written: list[Path] = []  # files this turn wrote, for the check runner
         self.undo_log = UndoLog()  # what each recent turn's writes replaced, for /undo
         self.review: Review | None = None  # the Review Desk's last pass, comments included
+        self.diagnosis: Diagnosis | None = None  # the last failure diagnosis, if any failed
+        self.diagnose_budget = DiagnoseBudget(limit=0)  # set per turn in _turn
+        self._test_failure = ""  # the newest test-shaped failure seen in a tool result this turn
         self._mode_before_plan = "default"
         self.tool_ctx.plan_handler = self._handle_plan
         self._system_prompt = system_prompt
@@ -617,6 +630,20 @@ class Session:
         self._blind_fixes = 0
         self._edited_since_run = False
         self.written: list[Path] = []
+        self._test_failure = ""
+        # The diagnosis of the turn before this one arrives as one meta message, and it is spent
+        # here: repeating it on every request would keep a stale failure in every later prompt.
+        self.diagnose_budget.limit = self.settings.diagnose_rounds
+        self._suspected: list[str] = []
+        self._radius_noted = False
+        self._diagnosis_root: Path | None = None
+        if self.diagnosis is not None and not self.diagnosis.sent:
+            note = self.diagnosis.note()
+            self.diagnosis.sent = True
+            if note:
+                self._add(Message("user", reminder(self._clean(note)), is_meta=True))
+                self._suspected = list(self.diagnosis.suspected_files)
+                self._diagnosis_root = Path(self.diagnosis.root)
         while True:
             cap = self.settings.max_requests_per_turn
             if cap and requests >= cap:
@@ -700,7 +727,8 @@ class Session:
                             + ("; the next request compacts" if self.settings.auto_compact else ""),
                         )
                     )
-                await self.run_checks()
+                results = await self.run_checks()
+                await self._diagnose_turn(results)
                 await self._review_turn()
                 return self._end("done", message.text())
             stop_blocks += 1
@@ -785,6 +813,7 @@ class Session:
                 )
                 continue
             self.bus.emit(ev.ToolStarted(call["id"], call["name"], call["input"]))
+            self._note_outside_radius(call)
             if self._repeats(call):
                 self._stuck = True
                 result = ToolResult(
@@ -817,7 +846,7 @@ class Session:
                     _uncancel()
                     cancelled = True
                     result = ToolResult("Interrupted by the user; the process was killed.", True)
-                self._track_fix_cycle(call["name"], result.is_error)
+                self._track_fix_cycle(call, result)
             self.bus.emit(
                 ev.ToolFinished(call["id"], call["name"], result.content, result.is_error)
             )
@@ -826,6 +855,32 @@ class Session:
             )
         self._add(Message("user", results))
         return cancelled
+
+    def _note_outside_radius(self, call: Block) -> None:
+        """Tell the model when it edits a file the last diagnosis did not suspect. Advice only.
+
+        The note is the diagnosis doing its job on the turn it was sent into; one line per turn
+        is enough, and a block would make advice a gate, which item 31 explicitly is not.
+        """
+        if not self._suspected or self._radius_noted or call["name"] not in EDIT_TOOLS:
+            return
+        path = self.tool_ctx.resolve(str(call["input"].get("file_path") or ""))
+        root = self._diagnosis_root or self.cwd
+        try:
+            relative = str(path.relative_to(root))
+        except ValueError:
+            return
+        if relative in self._suspected:
+            return
+        self._radius_noted = True
+        self.bus.emit(
+            ev.Notice(
+                "info",
+                f"editing {relative}, which the last diagnosis did not suspect "
+                f"(it named {', '.join(self._suspected)}). Advice only: carry on if you "
+                "have read the reason",
+            )
+        )
 
     def _repeats(self, call: Block) -> bool:
         """Count consecutive identical calls; True once the streak hits the cap."""
@@ -840,17 +895,29 @@ class Session:
         cap = self.settings.max_blind_fix_cycles
         return bool(cap) and call["name"] in EDIT_TOOLS and self._blind_fixes >= cap
 
-    def _track_fix_cycle(self, name: str, is_error: bool) -> None:
-        """Count edit-then-Bash cycles whose run failed; a look or a passing run resets."""
+    def _track_fix_cycle(self, call: Block, result: ToolResult) -> None:
+        """Count edit-then-Bash cycles whose run failed; a look or a passing run resets.
+
+        A failing Bash run that reads like a test also keeps its output for the diagnosis at the
+        end of the turn; a test command that passes clears it, so a failure the model already
+        fixed is not diagnosed after the fact.
+        """
+        name = call["name"]
         if name in LOOK_TOOLS:
             self._blind_fixes = 0
-        elif name in EDIT_TOOLS and not is_error:
+        elif name in EDIT_TOOLS and not result.is_error:
             self._edited_since_run = True
         elif name == "Bash":
-            if not is_error:
+            command = str(call["input"].get("command") or "")
+            if not result.is_error:
                 self._blind_fixes = 0
-            elif self._edited_since_run:
-                self._blind_fixes += 1
+                if is_test_command(command):
+                    self._test_failure = ""
+            else:
+                if self._edited_since_run:
+                    self._blind_fixes += 1
+                if is_test_failure(result.content):
+                    self._test_failure = result.content
             self._edited_since_run = False
 
     async def _run_one_tool(
@@ -1018,6 +1085,144 @@ class Session:
             f"this session's model ({self.model.id}) reviews instead",
         )
 
+    def diagnose_spec(self) -> tuple[ModelSpec | None, str]:
+        """The diagnosis critic: ``diagnose_model``, else the Review Desk's model.
+
+        No name at all means this session's model reads the failure, as the Review Desk does. A
+        name that resolves to nothing does NOT fall back here the way a review does: the
+        deterministic half needs no model, so an unreachable critic costs a line in the report
+        instead of a request spent on the lead model.
+        """
+        wanted = (self.settings.diagnose_model or "").strip() or (
+            self.settings.review_model or ""
+        ).strip()
+        if not wanted:
+            return self.model, ""
+        target = self.settings.agent_models.get(wanted, wanted)
+        if target in self.models:
+            return self.models[target], ""
+        return (
+            None,
+            f"no diagnosis critic: {wanted!r} is not a configured model id or agent tier, "
+            "so only where the failure points is known",
+        )
+
+    async def _diagnose_turn(self, results: list[CheckResult], force: bool = False) -> None:
+        """Item 31: after an editing turn whose checks or test run failed, diagnose the failure.
+
+        A diagnosis is advice about a run that already failed, so nothing here may break the
+        turn: a cancel or a crash becomes a notice, and the turn ends as it would have.
+        ``force`` is the panel's ``/runit`` path: a person asked for that run, so the location
+        ships even when this turn wrote no file.
+        """
+        if not self.settings.diagnose_after_fail or not (self.written or force):
+            return
+        checks_text = check_failure_text(as_dicts(results))
+        source, failure = ("check", checks_text) if checks_text else ("", "")
+        if not failure and self._test_failure:
+            source, failure = "test run", self._test_failure
+        if not failure:
+            self.diagnose_budget.used = 0
+            return
+        if not self.diagnose_budget.take():
+            last = self.diagnosis
+            said = (
+                f" The last diagnosis said: {last.root_cause or last.reason}"
+                if last and (last.root_cause or last.reason)
+                else ""
+            )
+            self.bus.emit(
+                ev.Notice(
+                    "warn",
+                    f"{self.diagnose_budget.limit} diagnoses already spent on this failure, "
+                    f"so the harness stops here and asks you: it needs a decision, not another "
+                    f"read.{said}",
+                )
+            )
+            return
+        try:
+            await self.diagnose(failure, source)
+        except asyncio.CancelledError:
+            _uncancel()
+            self.bus.emit(ev.Notice("info", "diagnosis cancelled: the failure was not read"))
+        except Exception as exc:  # noqa: BLE001 - a broken diagnosis is reported, never swallowed
+            self.bus.emit(
+                ev.Notice("error", f"diagnosis not run ({type(exc).__name__}: {exc})"[:300])
+            )
+
+    async def diagnose(self, failure: str, source: str = "manual") -> Diagnosis:
+        """Diagnose one failing run over this turn's diff. It advises; it never edits."""
+        root = await asyncio.to_thread(repo_root, self.cwd)
+        paths = [path for path in self.written if path.exists()]
+        spec, note = self.diagnose_spec()
+        if note:
+            self.bus.emit(ev.Notice("warn", note))
+        caller = None
+        if spec is not None:
+            if isinstance(self.approver, ev.DenyAll) and is_subscription_endpoint(spec.base_url):
+                self.bus.emit(
+                    ev.Notice(
+                        "warn",
+                        f"no critic call for this diagnosis: {spec.id} sits on a subscription plan "
+                        "endpoint and a headless run may not call it. Where the failure points "
+                        "below comes from the failure text alone",
+                    )
+                )
+            else:
+                caller = self._critic_caller(spec)
+        before = self.undo_log.turns[-1].before if self.undo_log.turns else {}
+        changes = await asyncio.to_thread(collect_changes, root, paths, before)
+        for change in changes:
+            change.diff = self._clean(change.diff)
+        changes = [change for change in changes if not change.diff.startswith("[redaction failed")]
+        round_no = self.diagnose_budget.used
+        critic = spec.id if caller is not None else "no critic"
+        self.bus.emit(ev.DiagnoseStarted(source, critic, round_no))
+        diagnosis = await run_diagnosis(
+            root,
+            source,
+            self._clean(failure),
+            self.undo_log.turns[-1].prompt if self.undo_log.turns else "",
+            format_changes(changes),
+            [change.path for change in changes],
+            caller,
+            critic,
+            round_no=round_no,
+        )
+        self.diagnosis = diagnosis
+        self.bus.emit(ev.DiagnoseFinished(str(root), diagnosis.as_dict()))
+        return diagnosis
+
+    async def diagnose_command(self, argument: str = "") -> Diagnosis:
+        """``/diagnose``: the last failure this session saw, or the text the person pasted.
+
+        Without an argument and with nothing to diagnose it says so instead of calling a model
+        with an empty failure, which would answer about nothing.
+        """
+        text = argument.strip() or self._test_failure
+        source = "manual" if argument.strip() else ("test run" if text else "")
+        if not text:
+            root = await asyncio.to_thread(repo_root, self.cwd)
+            diagnosis = Diagnosis(
+                root=str(root),
+                model="",
+                status="skipped",
+                source="manual",
+                reason=(
+                    "no failing run to read: give /diagnose the output, or run the tests first"
+                ),
+            )
+            self.bus.emit(ev.DiagnoseFinished(str(root), diagnosis.as_dict()))
+            return diagnosis
+        self.diagnose_budget.take()
+        return await self.diagnose(text, source)
+
+    def _critic_caller(self, spec: ModelSpec):
+        async def caller(system: str, user: str) -> str:
+            return await call_model(self.provider, spec, system, user)
+
+        return caller
+
     async def _review_turn(self) -> None:
         """The automatic Review Desk pass: after a turn that wrote files, when the setting is on.
 
@@ -1135,7 +1340,13 @@ class Session:
         files = [p for p in await self.changed_files() if not is_test_file(p)]
         self.bus.emit(ev.Notice("info", f"run-it: running the tests for {len(files)} file(s)"))
         result = await changed_coverage(root, files, pytest_args)
-        self.bus.emit(ev.RunItFinished(str(root), runit_dict(result)))
+        data = runit_dict(result)
+        self.bus.emit(ev.RunItFinished(str(root), data))
+        if result.status == "ran" and not result.tests_passed:
+            self._test_failure = run_failure_text(data)
+            await self._diagnose_turn([], force=True)
+        elif result.status == "ran":
+            self._test_failure = ""
         return result
 
     async def trace(self, test: str) -> TraceResult:

@@ -230,6 +230,16 @@ class Settings:
     # A folder of PID-stamped ".active-<pid>" locks. A live lock means another reviewer already
     # runs, so this one is skipped and says so; a skip is never reported as a review.
     review_lock_dir: str = ""
+    # Failure diagnosis (plan item 31): after a turn whose checks or test run failed, one call
+    # names where the failure points in this repo and, with a critic model, why. The answer goes
+    # to the next request as a meta note; nothing it says is applied to a file.
+    diagnose_after_fail: bool = True
+    # "" = the same model the Review Desk uses (review_model), so a critic from another family
+    # reads the failure. A model id or an agent_models key overrides that.
+    diagnose_model: str = ""
+    # Diagnoses one task may ask for before the harness stops and names the failure to the
+    # person instead of spending more requests on it. 0 means no cap.
+    diagnose_rounds: int = 3
     auto_compact: bool = True  # summarise the history when the soft budget is reached
     # Tool results over this many characters are sent in full for two requests, then as an
     # excerpt plus the path of a scratch file holding the exact text. 0 switches it off.

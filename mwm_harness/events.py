@@ -187,6 +187,28 @@ class ReviewFinished(Event):
 
 
 @dataclass
+class DiagnoseStarted(Event):
+    """The failure diagnosis is reading one failing run (``diagnose.py``)."""
+
+    source: str
+    model: str
+    round: int
+
+
+@dataclass
+class DiagnoseFinished(Event):
+    """One diagnosis: where the failure points, and what the critic says is wrong.
+
+    ``diagnosis["status"]`` is ``diagnosed`` or ``skipped`` (with the reason: nothing inside the
+    repo to point at, or no failing run to read). The suspected files are advice: no file was
+    opened, edited or reverted because of them.
+    """
+
+    root: str
+    diagnosis: dict[str, Any]
+
+
+@dataclass
 class ReviewComment(Event):
     """A reviewer comment the person acted on: sent on as their next turn, or kept for later."""
 
