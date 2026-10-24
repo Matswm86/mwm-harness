@@ -27,6 +27,14 @@ class ToolContext:
     scratch: Path
     sandbox: Sandbox
     output_cap: int = 30_000
+    # Total bytes this session's Write and Edit calls may put on disk (plan item 36). A
+    # runaway unattended --yolo run has no human to notice the disk filling; wall clock,
+    # /tmp size and RLIMIT_FSIZE cover one command, this covers the session's own tools.
+    # 0 switches it off. Bash-written bytes are not counted here: no cheap honest counter
+    # exists for many small files from a shell loop, and saying so beats a df guess that
+    # would blame the session for whatever the services on this box write next to it.
+    session_write_cap: int = 0
+    session_written: int = 0
     read_files: set[Path] = field(default_factory=set)
     # The mtime each read or written file had when this session last saw it, so a file somebody
     # else changed can be named before the model plans an edit on text that is no longer there.
@@ -44,6 +52,23 @@ class ToolContext:
             self.stamps[path] = path.stat().st_mtime_ns
         except OSError:
             self.stamps.pop(path, None)
+
+    def write_over_cap(self, payload_bytes: int) -> str | None:
+        """Refusal text when writing payload_bytes would take this session past its disk
+        cap, or None. Asked before the write and before the approval card, so a refused
+        write never touches disk and never shows a dialog the human would answer in vain."""
+        if (
+            not self.session_write_cap
+            or self.session_written + payload_bytes <= self.session_write_cap
+        ):
+            return None
+        return (
+            f"refused: this write of {payload_bytes:,} bytes would take the session past its "
+            f"disk cap of {self.session_write_cap:,} bytes "
+            f"(session_write_cap_mb = {self.session_write_cap // (1024 * 1024)}, "
+            f"{self.session_written:,} written so far). This is the runaway-write guard, "
+            "not a permission problem"
+        )
 
     def stale_files(self) -> list[str]:
         """Recorded files whose mtime moved, so the model is told before it edits stale text.

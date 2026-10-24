@@ -111,7 +111,14 @@ stdio server plays MCP, a mocked transport plays the web.
   harness's own config. `/tmp` gets its own writable tmpfs (mode 1777, empty at
   start), because a read-only `/tmp` breaks every tool that calls `mktemp`,
   the `detect-secrets` pre-commit hook included; host `/tmp` contents stay
-  invisible. Each command also gets an empty network namespace (no
+  invisible. Every sandboxed run also gets resource caps (plan item 36): the
+  command tree lives in a transient user systemd scope with `TasksMax` and
+  `MemoryMax`, `/tmp` is mounted with a size, one file a command may grow is
+  capped by `RLIMIT_FSIZE`, and the session's own Write and Edit calls share a
+  total disk budget. A run stopped by a cap reports which cap in the tool
+  result instead of a bare crash; without a user bus the scope caps cannot be
+  armed and the session says so at start. `sandbox = "off"` drops the four
+  sandbox caps; the session-write budget stays. Each command also gets an empty network namespace (no
   internet, no host services) unless the call sets `network: true`. What that
   flag costs depends on `shell_network`: `ask` asks the person, except in
   `bypassPermissions`, which is by definition the mode where nobody is watching
@@ -416,7 +423,9 @@ A 4B model on a laptop GPU is slow and loops on wrong edits; it is a way to
 exercise the loop, not a way to work.
 
 Optional files in `~/.config/mwm-harness/`: `settings.toml` (default model,
-permission mode, sandbox, extra writable and readable paths, `bash_env_keep`,
+permission mode, sandbox, `sandbox_tasks_max`, `sandbox_memory_max_mb`,
+`sandbox_file_max_mb`, `sandbox_tmpfs_max_mb`, `session_write_cap_mb`,
+extra writable and readable paths, `bash_env_keep`,
 `max_requests_per_turn`, hook settings files, `mcp_allow`, `mcp_files`,
 `skill_dirs`, `skill_exclude`, `web_allow_private`, `agent_models`),
 `models.toml` (more models or another endpoint), `deny.toml` (extra deny rules),

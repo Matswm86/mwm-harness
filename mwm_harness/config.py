@@ -149,6 +149,22 @@ class Settings:
     reasoning_effort: str = "medium"
     permission_mode: str = "default"
     sandbox: str = "auto"  # auto | bwrap | off
+    # Resource caps for sandboxed shell commands (plan item 36). An unattended --yolo run
+    # has no human to notice a job filling the disk or forking without end, and wall clock
+    # and output size were the only caps. 0 switches a cap off. sandbox = "off" drops the
+    # four caps below (they live in the sandbox); the session-write cap is a tool-layer
+    # guard and stays on. The process and memory caps need a user systemd scope (probed
+    # at session start, reported when absent); the /tmp and per-file caps are enforced by
+    # bwrap and rlimits alone.
+    sandbox_tasks_max: int = 512  # processes one Bash call may run at once (cgroup pids.max)
+    sandbox_memory_max_mb: int = 16384  # RAM one Bash call may hold (cgroup memory.max)
+    sandbox_file_max_mb: int = 2048  # RLIMIT_FSIZE: one file a sandboxed command may grow
+    sandbox_tmpfs_max_mb: int = 2048  # size of the private /tmp tmpfs
+    # Total bytes a session's Write and Edit calls may put on disk. Bash-written bytes are
+    # covered per-file and in /tmp by the caps above, but no cheap and honest counter exists
+    # for many small files written by a shell loop, so the session cap covers what the
+    # tools themselves write. 0 switches it off.
+    session_write_cap_mb: int = 4096
     # Bash calls with network: true. ask = always ask the person, in every mode (default);
     # allow = the normal permission decision; deny = refused. Without it, no network.
     shell_network: str = "ask"

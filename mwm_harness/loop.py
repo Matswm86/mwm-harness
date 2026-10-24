@@ -238,8 +238,13 @@ class Session:
                 secret_env=frozenset(spec.key_env for spec in self.models.values()),
                 env_keep=frozenset(self.settings.bash_env_keep),
                 private_readable=frozenset(self.settings.sandbox_private_readable),
+                tasks_max=self.settings.sandbox_tasks_max,
+                memory_max_mb=self.settings.sandbox_memory_max_mb,
+                file_max_mb=self.settings.sandbox_file_max_mb,
+                tmpfs_max_mb=self.settings.sandbox_tmpfs_max_mb,
             ),
             output_cap=self.settings.tool_output_cap,
+            session_write_cap=self.settings.session_write_cap_mb * 1024 * 1024,
         )
         self._hook_settings_arg = hook_settings
         if hook_settings is None:
@@ -524,6 +529,10 @@ class Session:
         # last saw, so it warns about a file that moved after the parent read it, but the child's
         # own reads cannot make the parent's warning go away.
         child.tool_ctx.stamps = dict(self.tool_ctx.stamps)
+        # The session disk cap spans subagents too: the child starts at the parent's count
+        # (its cap does not reset with a Task call) and the parent adopts the child's total
+        # below, so writes across a whole turn family charge one budget.
+        child.tool_ctx.session_written = self.tool_ctx.session_written
         child.transcript.note("subagent", f"{name} started by session {self.transcript.session_id}")
         self.bus.emit(ev.SubagentStarted(name, model.id, prompt))
         try:
@@ -535,6 +544,9 @@ class Session:
             self.meter.total_prompt += child.meter.total_prompt
             self.meter.total_completion += child.meter.total_completion
             self.meter.requests += child.meter.requests
+            self.tool_ctx.session_written = max(
+                self.tool_ctx.session_written, child.tool_ctx.session_written
+            )
             await child.hooks.drain()
         self.bus.emit(ev.SubagentFinished(name, ended.reason, len(counted)))
         if ended.reason == "cancelled":

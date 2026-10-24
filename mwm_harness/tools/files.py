@@ -97,14 +97,23 @@ class Write(Tool):
         path = ctx.resolve(tool_input["file_path"])
         if path.exists() and path not in ctx.read_files:
             return ToolResult(f"{path} exists; Read it before overwriting it", True)
+        payload = tool_input["content"].encode("utf-8")
+        over = ctx.write_over_cap(len(payload))
+        if over:
+            return ToolResult(over, True)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(tool_input["content"], encoding="utf-8")
+            path.write_bytes(payload)
         except OSError as exc:
             return ToolResult(f"could not write {path}: {exc}", True)
+        ctx.session_written += len(payload)
         ctx.read_files.add(path)
         ctx.note_file(path)
         return ToolResult(f"wrote {len(tool_input['content'])} characters to {path}")
+
+    def refusal(self, tool_input: dict[str, Any], ctx: ToolContext) -> str | None:
+        payload = len(tool_input.get("content", "").encode("utf-8"))
+        return ctx.write_over_cap(payload)
 
 
 class Edit(Tool):
@@ -134,7 +143,8 @@ class Edit(Tool):
         if old == new:
             return "old_string and new_string are identical"
         try:
-            found = path.read_text(encoding="utf-8").count(old)
+            text = path.read_text(encoding="utf-8")
+            found = text.count(old)
         except (OSError, UnicodeDecodeError) as exc:
             return f"could not read {path}: {exc}"
         if found == 0:
@@ -144,7 +154,7 @@ class Edit(Tool):
             )
         if found > 1 and not tool_input.get("replace_all"):
             return f"old_string occurs {found} times; add context or set replace_all"
-        return None
+        return ctx.write_over_cap(len(text.replace(old, new).encode("utf-8")))
 
     async def run(self, tool_input: dict[str, Any], ctx: ToolContext) -> ToolResult:
         problem = self.refusal(tool_input, ctx)
@@ -153,10 +163,15 @@ class Edit(Tool):
         path = ctx.resolve(tool_input["file_path"])
         old, new = tool_input["old_string"], tool_input["new_string"]
         text = path.read_text(encoding="utf-8")
+        after = text.replace(old, new).encode("utf-8")
+        over = ctx.write_over_cap(len(after))
+        if over:
+            return ToolResult(over, True)
         try:
-            path.write_text(text.replace(old, new), encoding="utf-8")
+            path.write_bytes(after)
         except OSError as exc:
             return ToolResult(f"could not write {path}: {exc}", True)
+        ctx.session_written += len(after)
         ctx.note_file(path)
         return ToolResult(f"replaced {text.count(old)} occurrence(s) in {path}")
 
