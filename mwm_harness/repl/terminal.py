@@ -220,6 +220,9 @@ class Printer:
         self._thinking = False
         self._answering = False  # inside a stamped answer block
         self._tool_started: dict[str, str] = {}  # tool_use_id -> ts of its ToolStarted
+        # Item 37: the live task list. The newest payload is kept so the usage line can carry
+        # the counter, and so an update that only ticks statuses prints the changed rows alone.
+        self._last_todos: list[dict[str, Any]] = []
 
     def paint(self, code: str, text: str) -> str:
         return f"{code}{text}{RESET}" if self.color else text
@@ -247,6 +250,46 @@ class Printer:
             else:
                 code = DIM
             self.line(self.paint(code, row), event)
+
+    def tasks_counter(self) -> str:
+        """Item 37: ``tasks x/y`` for the usage line, from the newest list seen."""
+        done = sum(1 for item in self._last_todos if item.get("status") == "completed")
+        return f"tasks {done}/{len(self._last_todos)}"
+
+    def task_row(self, item: dict[str, Any]) -> str:
+        status = item.get("status", "")
+        mark = TASK_MARKS.get(status, "[?]")
+        text = f"  {mark} {item.get('content', '')}"
+        code = CYAN if status == "in_progress" else DIM if status == "completed" else None
+        return self.paint(code, text) if code else text
+
+    def draw_todos(self, todos: list[dict[str, Any]], event: ev.Event | None = None) -> None:
+        """Item 37: the live list ticks, it does not reprint a wall of history.
+
+        When the same items come back with moved statuses only the moved rows print, so a
+        three-item list ticking twice adds three lines total. A new set of items redraws the
+        whole block under its counter, so after a fresh task the person still sees everything
+        without scrolling back.
+        """
+        prev = {str(item.get("content")): item.get("status", "") for item in self._last_todos}
+        moved = (
+            bool(todos)
+            and len(prev) == len(todos)
+            and all(str(item.get("content")) in prev for item in todos)
+        )
+        self._last_todos = [dict(item) for item in todos]
+        if moved:
+            for item in todos:
+                if prev.get(str(item.get("content"))) != item.get("status", ""):
+                    self.line(self.task_row(item), event, stamp=False)
+            return
+        if not todos:
+            self.line(self.paint(DIM, "  (no tasks)"), event)
+            return
+        done = sum(1 for item in todos if item.get("status") == "completed")
+        self.line(self.paint(DIM, f"[tasks {done}/{len(todos)}]"), event)
+        for item in todos:
+            self.line(self.task_row(item), event, stamp=False)
 
     def stamp(self, event: ev.Event | None = None) -> str:
         """Local wall-clock time of the event (now when there is none), as a dim prefix."""
@@ -318,13 +361,14 @@ class Printer:
             code = RED if event.level == "error" else YELLOW
             self.line(self.paint(code, f"[{event.level}] {event.text}"), event)
         elif isinstance(event, ev.TodosUpdated):
-            self.line(format_todos(event.todos), event)
+            self.draw_todos(event.todos, event)
         elif isinstance(event, ev.UsageUpdated):
+            tail = f" | {self.tasks_counter()}" if self._last_todos else ""
             self.line(
                 self.paint(
                     DIM,
                     f"[ctx {event.context_fraction:.1%} | in {event.prompt_tokens:,} "
-                    f"out {event.completion_tokens:,} cached {event.cached_tokens:,}]",
+                    f"out {event.completion_tokens:,} cached {event.cached_tokens:,}{tail}]",
                 ),
                 event,
             )
@@ -622,12 +666,19 @@ def spec_lines(report: dict[str, Any]) -> list[str]:
     return rows
 
 
+TASK_MARKS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+
+
 def format_todos(todos: list[dict[str, Any]]) -> str:
-    marks = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
     rows = [
-        f"  {marks.get(item.get('status', ''), '[?]')} {item.get('content', '')}" for item in todos
+        f"  {TASK_MARKS.get(item.get('status', ''), '[?]')} {item.get('content', '')}"
+        for item in todos
     ]
-    return "\n".join(rows) if rows else "  (no tasks)"
+    if not rows:
+        return "  (no tasks)"
+    done = sum(1 for item in todos if item.get("status") == "completed")
+    rows.insert(0, f"[tasks {done}/{len(todos)}]")
+    return "\n".join(rows)
 
 
 class TerminalApprover:

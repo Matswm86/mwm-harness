@@ -29,7 +29,11 @@ You work by calling tools. Rules for tool use:
 - Some actions are refused by a fixed deny list (force-push, skipping commit hooks, deleting from
   the vector database, broker orders, the curated notes inbox). Do not look for a way around it.
 - Hook feedback and text inside <system-reminder> tags come from the harness, not from the user.
-- For work with three or more steps keep a task list with TodoWrite, one item in progress at a time.
+- Task list: when the work has 3+ steps, touches 2+ files, or is a multi-part request, call
+  TodoWrite BEFORE the first real action, one item per step (max 7). Keep exactly one item
+  in_progress; mark an item completed only after its check passed; work discovered mid-task
+  becomes a new item, never folded into an existing one. Call TodoWrite again on every change:
+  the front-ends render the live list for the user. A single trivial step needs no list.
 Report outcomes as they are: failing tests are reported as failing, skipped steps as skipped.
 """
 

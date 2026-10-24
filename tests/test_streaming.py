@@ -151,3 +151,51 @@ def test_terminal_prints_thinking_dimmed_and_hides_it_after_think_off(capsys):
     out(ev.ReasoningDelta("hidden"))
     out(ev.TextDelta("Visible."))
     assert re.fullmatch(f"{stamp}Visible\\.", capsys.readouterr().out)
+
+
+def test_terminal_task_list_ticks_instead_of_reprinting_the_wall(capsys):
+    """Item 37: a moved status prints only the moved rows; the counter rides the usage line."""
+    from mwm_harness import events as ev
+    from mwm_harness.repl.terminal import Printer
+
+    out = Printer(color=False)
+    out(
+        ev.TodosUpdated(
+            [
+                {"content": "plan", "status": "completed"},
+                {"content": "build", "status": "in_progress"},
+                {"content": "ship", "status": "pending"},
+            ]
+        )
+    )
+    printed = capsys.readouterr().out.splitlines()
+    assert any(ln.endswith("[tasks 1/3]") for ln in printed)
+    assert sum(1 for ln in printed if "[~] build" in ln) == 1
+
+    out(
+        ev.TodosUpdated(
+            [
+                {"content": "plan", "status": "completed"},
+                {"content": "build", "status": "completed"},
+                {"content": "ship", "status": "in_progress"},
+            ]
+        )
+    )
+    ticked = capsys.readouterr().out.splitlines()
+    assert len(ticked) == 2
+    assert any("[x] build" in ln for ln in ticked) and any("[~] ship" in ln for ln in ticked)
+    assert not any("[tasks" in ln for ln in ticked)
+
+    out(
+        ev.UsageUpdated(
+            prompt_tokens=100,
+            completion_tokens=10,
+            cached_tokens=0,
+            context_window=128000,
+            soft_budget=0,
+        )
+    )
+    assert "tasks 2/3]" in capsys.readouterr().out
+
+    out(ev.TodosUpdated([]))
+    assert "(no tasks)" in capsys.readouterr().out

@@ -163,6 +163,16 @@ dialog.newtab button.go{background:var(--cyan);border-color:var(--cyan);color:#0
 .box.done{background:var(--ok);border-color:var(--ok)} .box.now{border-color:var(--cyan);box-shadow:inset 0 0 0 2px var(--pane),inset 0 0 0 6px var(--cyan)}
 li.done>span:nth-child(2){color:var(--muted);text-decoration:line-through;text-decoration-color:var(--faint)}
 li.click{cursor:pointer}
+/* item 37: the task list is pinned at the top of the rail, never inside a collapsed details */
+.taskblock{border-bottom:1px solid var(--line-hi);padding-bottom:4px}
+.app.min-rail .taskblock{display:none}
+.taskblock header{display:flex;align-items:center;gap:6px;padding:9px 12px 4px}
+.taskblock h2{margin:0;font:700 12px var(--display);letter-spacing:.02em}
+.taskblock em{margin-left:auto;font:500 10px var(--mono);font-style:normal;color:var(--muted)}
+.taskblock .pbar{height:4px;margin:0 12px 7px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden}
+.taskblock .pbar i{display:block;height:100%;width:0;border-radius:3px;background:var(--ok);transition:width .3s}
+.taskblock li.now{background:rgba(94,225,255,.07)}
+.taskblock .plan{padding:0 12px 6px;font:11px/1.45 var(--mono);color:var(--muted);white-space:pre-wrap;max-height:120px;overflow:auto}
 #outputs li{grid-template-columns:36px minmax(0,1fr) auto}
 .tree ul{padding:0 0 0 10px}
 .tree li{display:block;padding:0}
@@ -173,7 +183,7 @@ li.click{cursor:pointer}
 .vt{font:600 9px var(--mono);letter-spacing:.06em;padding:0 4px;border-radius:3px}
 @keyframes pulse{50%{opacity:.35}}
 
-/* ---------- centre: the sun over the conversation ---------- */
+/* ---------- centre: the cortex over the conversation ---------- */
 .centre{grid-area:centre;display:grid;grid-template-rows:minmax(0,var(--split,52fr)) 10px minmax(0,var(--rest,48fr));min-height:0}
 .centre.min-scene{grid-template-rows:auto 10px minmax(0,1fr)}
 .centre.min-scene .scene .gl,.centre.min-scene .scene .labels{display:none}
@@ -421,6 +431,7 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
     <span class="meter" title="Last prompt plus last answer, as reported by the endpoint">ctx <span class="bar"><i id="ctxbar"></i></span><b id="ctxnum">0</b>/<span id="ctxwin">0</span></span>
     <span class="chip" title="Tokens this session">in <b id="tin">0</b> · out <b id="tout">0</b> · cached <b id="tcached">0</b></span>
     <span class="chip" title="Model requests this session">requests <b id="reqs">0</b></span>
+    <span class="chip" id="striptasks" hidden title="Task list: completed of total">tasks <b id="striptaskn">0/0</b></span>
     <span class="chip nowchip" id="nowrun" hidden aria-live="polite"></span>
     <span class="chip" id="sandbox" title="Shell sandbox">shell sandbox <b>?</b></span>
     <span class="chip" id="netpolicy" title="Bash calls with network: true">network <b>?</b></span>
@@ -440,11 +451,15 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
 
   <nav class="pane rail" aria-label="Session lists">
     <button class="railmin" id="railmin" type="button" title="Restore the rail" aria-label="Restore the rail">»</button>
+    <section class="taskblock" id="taskblock" aria-label="Session task list">
+      <header><h2>Tasks</h2><em id="tasksum"></em></header>
+      <div class="pbar" title="Completed share of the task list"><i id="taskbar"></i></div>
+      <ul id="tasks"></ul>
+    </section>
+    <details open id="plansub"><summary>Plan <em id="plansum">none</em></summary><div class="note" id="plan"></div></details>
     <details open><summary>Agents <em id="agentsum"></em></summary><ul id="agents"></ul></details>
     <details open><summary>Outputs <em id="outcount">0 results</em></summary><ul id="outputs"></ul></details>
     <details open id="checkbox"><summary>Checks <em id="checksum">none yet</em></summary><ul id="checks"></ul></details>
-    <details open><summary>Tasks <em id="tasksum"></em></summary><ul id="tasks"></ul></details>
-    <details><summary>Plan <em id="plansum">none</em></summary><div class="note" id="plan"></div></details>
     <details open><summary>MCP servers <em id="mcpsum"></em></summary><ul id="mcp"></ul></details>
     <details open id="hwbox"><summary>This machine <em id="hwsum"></em></summary><div class="hw" id="hw"><span class="miss">reading sensors</span></div></details>
     <details><summary>Touched files <em id="touchsum">0</em></summary><ul id="touched"></ul></details>
@@ -462,13 +477,13 @@ pre.src div.hit i{box-shadow:inset -3px 0 var(--ok)} pre.src div.miss i{box-shad
   <div class="grip" id="gripl" role="separator" aria-orientation="vertical" aria-label="Drag to resize the rail" tabindex="0"><button class="gmin" id="minrail" type="button" title="Minimize the rail" aria-label="Minimize the rail">‹</button></div>
 
   <main class="centre" id="centre">
-    <section class="pane scene" aria-label="3D view of the agent, its servers, agents and the trading day">
+    <section class="pane scene" aria-label="The session as a live neural network: tool sources feed the task layer, files cluster by project, agents read out">
       <div class="gl"><canvas id="gl"></canvas><div class="labels" id="labels"></div><div class="noscene" id="noscene" hidden></div></div>
       <div class="scenebar">
         <div class="seg" role="group" aria-label="Scene focus">
           <button aria-pressed="true" data-focus="all">Everything</button>
+          <button aria-pressed="false" data-focus="tasks">Tasks</button>
           <button aria-pressed="false" data-focus="servers">Servers</button>
-          <button aria-pressed="false" data-focus="agents">Agents</button>
           <button aria-pressed="false" data-focus="day">Day</button>
         </div>
         <div class="inspect" id="inspect" aria-live="polite"></div>
@@ -1423,15 +1438,18 @@ function stopNowTimer() { clearInterval(nowTimer); nowTimer = 0; }
 function setTodos(todos) {
   const list = $("tasks"); list.replaceChildren();
   (todos || []).forEach((t) => {
-    const li = el("li", t.status === "completed" ? "done" : "");
+    const li = el("li", t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : "");
     li.append(el("i", "box" + (t.status === "completed" ? " done" : t.status === "in_progress" ? " now" : "")),
       el("span", null, t.status === "in_progress" && t.activeForm ? t.activeForm : t.content),
       el("small", null, t.status === "in_progress" ? "now" : ""));
     list.append(li);
   });
-  if (!todos || !todos.length) list.append(el("li", "empty", "No tasks yet."));
-  const done = (todos || []).filter((t) => t.status === "completed").length;
-  $("tasksum").textContent = todos && todos.length ? `${done} of ${todos.length}` : "";
+  if (!todos || !todos.length) list.append(el("li", "empty", "No tasks yet. The model keeps this list with TodoWrite."));
+  const done = (todos || []).filter((t) => t.status === "completed").length, n = (todos || []).length;
+  $("tasksum").textContent = n ? `${done} of ${n}` : "";
+  $("taskbar").style.width = n ? (done / n * 100).toFixed(1) + "%" : "0";
+  $("striptasks").hidden = !n; $("striptaskn").textContent = `${done}/${n}`;
+  if (scene && scene.setTodos) scene.setTodos(todos || []);
 }
 function setPlan(plan) {
   $("plan").textContent = plan || "No plan yet. /plan turns plan mode on.";
@@ -1465,6 +1483,7 @@ function setTouched(paths) {
   });
   if (!paths || !paths.length) list.append(el("li", "empty", "Files the tools read or write show up here."));
   $("touchsum").textContent = String((paths || []).length);
+  if (scene && scene.setFiles) scene.setFiles(paths || []);
   const last = paths && paths[paths.length - 1];
   if (last && openFiles.has(last) && openFiles.get(last).kind === "file") openFile(last);  // refresh an open file
 }
@@ -2053,37 +2072,53 @@ function drawChart() {
 new ResizeObserver(drawChart).observe($("chart"));
 if (document.fonts) document.fonts.ready.then(drawChart);
 
-/* ---------------- 3D scene: the agent as the sun, MCP servers, agents, the Oslo trading day ---------------- */
+/* ---------------- 3D scene (item 38, "Cortex"): the session as a live neural network ----------------
+   Four columns, left to right: tool sources (MCP servers, local tools), the task layer (the live
+   TodoWrite list), the file layer (touched files clustered by project), the output layer (the main
+   session and its subagents). Edges are learned weights: traffic brightens them, rebuilds re-draw
+   them from the weight table. Pulses only move when the session moves; there is no orbit, no sun. */
 let scene = null;
-function buildScene(THREE) {
+function buildCortex(THREE) {
   const canvas = $("gl"), labels = $("labels"), inspect = $("inspect");
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.outputEncoding = THREE.sRGBEncoding; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
-  const world = new THREE.Scene(); world.fog = new THREE.FogExp2(0x05070d, 0.006);
+  const world = new THREE.Scene(); world.fog = new THREE.FogExp2(0x05070d, 0.0055);
   const camera = new THREE.PerspectiveCamera(40, 2, .1, 400);
-  const home = new THREE.Vector3(0, 0, 0), look = home.clone();
-  let yaw = .55, pitch = .62, dist = 40, wantDist = 40, wantPitch = .62;
-  world.add(new THREE.AmbientLight(0x6070a0, .14));
-  world.add(new THREE.PointLight(0xffb347, 5, 120, 1));
-  const rimL = new THREE.DirectionalLight(0x5ee1ff, .6); rimL.position.set(-20, 14, -10); world.add(rimL);
+  let yaw = .3, pitch = .5, dist = 40, wantDist = 40, wantPitch = .5;
+  const home = new THREE.Vector3(0, -.6, 0), look = home.clone();
+  world.add(new THREE.AmbientLight(0x6070a0, .18));
+  const keyL = new THREE.DirectionalLight(0x5ee1ff, .55); keyL.position.set(-18, 16, 14); world.add(keyL);
+  const fillL = new THREE.DirectionalLight(0x4a5f8a, .4); fillL.position.set(14, -6, -16); world.add(fillL);
+  const grid = new THREE.GridHelper(46, 46, 0x16233f, 0x111a2b); grid.position.y = -9.2; world.add(grid);
 
   function glowTex(color) { const c = document.createElement("canvas"); c.width = c.height = 128; const g = c.getContext("2d"); const r = g.createRadialGradient(64, 64, 0, 64, 64, 64); r.addColorStop(0, color); r.addColorStop(.25, color.replace(/[\d.]+\)$/, ".45)")); r.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = r; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); }
   function glow(color, size) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex(color), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true })); s.scale.set(size, size, 1); return s; }
 
-  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(2.3, 5), new THREE.MeshStandardMaterial({ color: 0xff9a3c, emissive: 0xff6a00, emissiveIntensity: 1.1, roughness: .28, metalness: .2 }));
-  core.userData = { kind: "the agent", title: "MWM", kv: [], prio: 0 };
-  const rimMat = new THREE.ShaderMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide, uniforms: { c: { value: new THREE.Color(0xffa040) } },
-    vertexShader: "varying vec3 n; varying vec3 v; void main(){ n = normalize(normalMatrix*normal); vec4 mv = modelViewMatrix*vec4(position,1.); v = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }",
-    fragmentShader: "uniform vec3 c; varying vec3 n; varying vec3 v; void main(){ float f = pow(1.0 - abs(dot(n, v)), 2.2); gl_FragColor = vec4(c*f*1.6, f); }" });
-  world.add(new THREE.Mesh(new THREE.SphereGeometry(3.1, 64, 64), rimMat));
-  world.add(core); const coreGlow = glow("rgba(255,140,40,1)", 11); world.add(coreGlow);
-  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(2.9, 2), new THREE.MeshBasicMaterial({ color: 0xffc27a, wireframe: true, transparent: true, opacity: .12 })); world.add(shell);
-  function ring(r, color, op) { const m = new THREE.Mesh(new THREE.TorusGeometry(r, .025, 8, 256), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op })); m.rotation.x = Math.PI / 2; world.add(m); }
-  ring(7.5, 0x9fb8ff, .22); ring(11.5, 0x9fb8ff, .16);
+  const LX = [-11, -3.7, 3.7, 11];   // sources, tasks, files, outputs
+  const nodes = new Map();           // stable id -> mesh
+  const weights = new Map();         // "srcId>dstId" -> call hits
+  const traffic = new Map();         // same key -> Line
+  let lattice = [], pickables = [], labelled = [], labelEls = [];
+  const anchors = [];                // label-only bodies: project halos and the day sessions
+  const pulses = [];
 
-  let pickables = [core], labelled = [], labelEls = [];
+  function addNode(id, x, y, z, size, color, emissive, intensity, ud) {
+    const old = nodes.get(id); if (old) { world.remove(old); old.geometry.dispose(); old.material.dispose(); }
+    const m = new THREE.Mesh(new THREE.SphereGeometry(size, 32, 32), new THREE.MeshStandardMaterial({
+      color, emissive, emissiveIntensity: intensity, roughness: .45, metalness: .3 }));
+    m.position.set(x, y, z); m.userData = Object.assign({ id, kv: [], base: y, glow: null }, ud);
+    world.add(m); nodes.set(id, m); return m;
+  }
+  function dropLayer(prefix) {
+    for (const [id, m] of [...nodes]) if (id.startsWith(prefix)) {
+      world.remove(m); m.geometry.dispose(); m.material.dispose(); nodes.delete(id);
+      if (m.userData.glow) { m.userData.glow.material.dispose(); }
+    }
+  }
   function relabel() {
+    labelled = [...nodes.values()].filter((o) => o.userData.title).concat(anchors);
+    pickables = [...nodes.values()];
     labels.replaceChildren();
     labelEls = labelled.map((o) => {
       const u = o.userData, d = el("div", "lbl" + (u.hot ? " hot" : "") + (u.warn ? " warn" : "") + (u.sess ? " sess" : ""), u.title);
@@ -2091,90 +2126,220 @@ function buildScene(THREE) {
       labels.append(d); return d;
     });
   }
-  const sessions = [];
-  /* outer ring = Oslo day: Asia 02-07, London 09-15:30, NY 15:30-22 */
-  const DAY_R = 16.5, hToA = (h) => -h / 24 * Math.PI * 2 + Math.PI / 2;
-  const base = new THREE.Mesh(new THREE.TorusGeometry(DAY_R, .03, 6, 256), new THREE.MeshBasicMaterial({ color: 0x9fb8ff, transparent: true, opacity: .2 })); base.rotation.x = Math.PI / 2; world.add(base);
-  [["Asia", 2, 7, 0x6f8cff], ["London", 9, 15.5, 0x6ee7a8], ["New York", 15.5, 22, 0xffb347]].forEach(([n, a, b, c]) => {
-    const m = new THREE.Mesh(new THREE.TorusGeometry(DAY_R, .12, 8, 128, (b - a) / 24 * Math.PI * 2), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: .95, fog: false }));
-    m.rotation.x = Math.PI / 2; m.rotation.z = -hToA(a); world.add(m);
-    const ang = hToA((a + b) / 2), anchor = new THREE.Object3D(); anchor.position.set(Math.cos(ang) * (DAY_R + 2.4), 0, -Math.sin(ang) * (DAY_R + 2.4));
-    anchor.userData = { kind: "session", title: n, sess: true, prio: 5, kv: [] }; world.add(anchor); sessions.push(anchor);
-  });
-  for (let h = 0; h < 24; h++) { const ang = hToA(h), t = new THREE.Mesh(new THREE.BoxGeometry(.05, .05, h % 6 ? .35 : .8), new THREE.MeshBasicMaterial({ color: 0x9fb8ff, transparent: true, opacity: h % 6 ? .25 : .55 })); t.position.set(Math.cos(ang) * (DAY_R + .8), 0, -Math.sin(ang) * (DAY_R + .8)); t.lookAt(0, 0, 0); world.add(t); }
-  const needle = new THREE.Mesh(new THREE.BoxGeometry(.06, .06, 4), new THREE.MeshBasicMaterial({ color: 0xffffff })); world.add(needle);
-  const needleGlow = glow("rgba(255,255,255,1)", 2.2); world.add(needleGlow);
-  /* the file being written orbits close to the core while an Edit or Write runs */
-  const fileSat = new THREE.Mesh(new THREE.BoxGeometry(1.1, .06, 1.4), new THREE.MeshStandardMaterial({ color: 0x6ee7a8, emissive: 0x2fbf7a, emissiveIntensity: .9 }));
-  fileSat.add(glow("rgba(110,231,168,1)", 4)); fileSat.userData = { kind: "file", title: "", hot: true, prio: 1, kv: [] }; fileSat.visible = false; world.add(fileSat);
-  const beam = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x6ee7a8, transparent: true, opacity: .8 })); beam.visible = false; world.add(beam);
-  const writing = new Map();   // tool_use_id -> file path
-  const pulses = [];
-  function pulse(to, color) { const s = glow(color, 1.1); s.userData = { to, t: 0 }; world.add(s); pulses.push(s); }
-  const starGeo = new THREE.BufferGeometry(), N = 1400, pos = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) { const r = 60 + Math.random() * 120, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1); pos.set([r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph) * .6, r * Math.sin(ph) * Math.sin(th)], i * 3); }
-  starGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  world.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xaab8ff, size: .18, transparent: true, opacity: .7 })));
-
-  let serverObjs = new Map(), agentObjs = [];
-  function rebuildLabels() {
-    pickables = [core, ...serverObjs.values(), ...agentObjs];
-    labelled = [...serverObjs.values(), ...agentObjs, fileSat, ...sessions];
-    relabel();
+  /* faint full connectivity between adjacent real layers: the untrained mesh of the network */
+  function rebuildLattice() {
+    lattice.forEach((l) => { world.remove(l); l.geometry.dispose(); l.material.dispose(); }); lattice = [];
+    const cols = [
+      idsWith("in:"), idsWith("task:"), idsWith("file:"), idsWith("out:")
+    ];
+    for (let c = 0; c < cols.length - 1; c++) {
+      const a = cols[c], b = cols[c + 1], pts = [];
+      if (!a.length || !b.length) continue;
+      a.forEach((i) => b.forEach((j) => pts.push(nodes.get(i).position, nodes.get(j).position)));
+      const g = new THREE.BufferGeometry().setFromPoints(pts);
+      const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x3d5a8a, transparent: true, opacity: .07 }));
+      world.add(l); lattice.push(l);
+    }
+    if (!cols[1].length) {  // no task list yet: sources connect straight to the outputs
+      const pts = [];
+      cols[0].forEach((i) => cols[3].forEach((j) => pts.push(nodes.get(i).position, nodes.get(j).position)));
+      if (pts.length) { const g = new THREE.BufferGeometry().setFromPoints(pts);
+        const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x3d5a8a, transparent: true, opacity: .05 }));
+        world.add(l); lattice.push(l); }
+    }
   }
-  function clearObjs(objs) { objs.forEach((o) => { world.remove(o); o.geometry.dispose(); o.material.dispose(); }); }
+  const idsWith = (prefix) => [...nodes.keys()].filter((k) => k.startsWith(prefix));
+
+  /* learned weights: a real call between two nodes thickens its edge, forever (this session) */
+  function bump(srcId, dstId) {
+    if (!srcId || !dstId || !nodes.has(srcId) || !nodes.has(dstId)) return;
+    const k = srcId + ">" + dstId;
+    weights.set(k, (weights.get(k) || 0) + 1);
+    drawEdge(k);
+  }
+  function drawEdge(k) {
+    const [srcId, dstId] = k.split(">");
+    if (!nodes.has(srcId) || !nodes.has(dstId)) return;
+    const w = weights.get(k);
+    let ln = traffic.get(k);
+    if (!ln) {
+      ln = new THREE.Line(new THREE.BufferGeometry().setFromPoints([nodes.get(srcId).position, nodes.get(dstId).position]),
+        new THREE.LineBasicMaterial({ color: 0x7fd4ff, transparent: true, opacity: .1 }));
+      world.add(ln); traffic.set(k, ln);
+    }
+    ln.material.opacity = Math.min(.8, .12 + w * .07);
+  }
+  function rebuildTraffic() {
+    traffic.forEach((ln) => { world.remove(ln); ln.geometry.dispose(); ln.material.dispose(); }); traffic.clear();
+    [...weights.keys()].forEach(drawEdge);
+  }
+  function pulsePath(ids, color) {
+    const pts = ids.map((i) => nodes.get(i)).filter(Boolean);
+    if (pts.length < 2) return;
+    const s = glow(color, 1.2); s.userData = { pts, t: 0 }; world.add(s); pulses.push(s);
+  }
+
+  /* ---- fixed source neurons: prompt (top) and local tools (bottom) live in the input column ---- */
+  addNode("in:prompt", LX[0], 4.4, 0, .55, 0x9ef0ff, 0x1aa6c8, .5, { kind: "input", title: "your prompt", prio: 3 });
+  addNode("in:local", LX[0], -4.4, 0, .55, 0x8fd6a8, 0x2f8f5b, .5, { kind: "input", title: "local tools", prio: 3, kv: [["tools", "Bash Read Write Edit Glob Grep"]] });
+  let serverObjs = new Map();
   function setServers(rows) {
     const key = rows.map((r) => `${r.name}:${r.state}:${r.tools}`).join("|");
     if (key === setServers.key) return; setServers.key = key;
-    clearObjs([...serverObjs.values()]); serverObjs = new Map();
+    dropLayer("srv:"); serverObjs = new Map();
+    const n = Math.max(1, rows.length);
     rows.forEach((s, i) => {
-      const a = i / Math.max(1, rows.length) * Math.PI * 2, size = .32 + Math.min(s.tools, 40) / 60, bad = s.state === "failed", up = s.state === "running";
-      const m = new THREE.Mesh(new THREE.SphereGeometry(size, 40, 40), new THREE.MeshStandardMaterial({ color: bad ? 0xff6b5b : up ? 0x9ef0ff : 0x7b8db8,
-        emissive: bad ? 0x8a1a10 : up ? 0x1aa6c8 : 0x0d1426, emissiveIntensity: bad || up ? .9 : .4, roughness: .45, metalness: .35 }));
-      m.userData = { kind: "mcp server", title: s.name, a, r: 7.5, speed: .06 + i * .004, prio: bad ? 1 : 3, warn: bad, kv: [["tools", s.tools], ["transport", s.transport], ["state", s.state]].concat(bad ? [["error", s.error.slice(0, 80)]] : []), hits: 0 };
-      if (bad) m.add(glow("rgba(255,107,91,1)", size * 5));
-      world.add(m); serverObjs.set(s.name, m);
+      const y = 2.7 - (i / Math.max(1, n - 1)) * 5.4, bad = s.state === "failed", up = s.state === "running";
+      const size = .3 + Math.min(s.tools, 40) / 70;
+      const m = addNode("srv:" + s.name, LX[0], y, 0, size,
+        bad ? 0xff6b5b : up ? 0x9ef0ff : 0x7b8db8, bad ? 0x8a1a10 : up ? 0x1aa6c8 : 0x0d1426, bad || up ? .85 : .35,
+        { kind: "mcp server · input", title: s.name, prio: bad ? 1 : 3, warn: bad,
+          kv: [["tools", s.tools], ["transport", s.transport], ["state", s.state]].concat(bad ? [["error", s.error.slice(0, 80)]] : []) });
+      if (bad) { const g = glow("rgba(255,107,91,1)", size * 5); m.add(g); m.userData.glow = g; }
+      serverObjs.set(s.name, m);
     });
-    rebuildLabels();
+    rebuildLattice(); rebuildTraffic(); relabel();
   }
+
+  /* ---- task layer: one neuron per TodoWrite item, in_progress lit, completed dim green ---- */
+  let activeTask = null;
+  function setTodos(todos) {
+    dropLayer("task:"); activeTask = null;
+    const n = (todos || []).length;
+    if (!n) {
+      const m = addNode("task:none", (LX[1] + LX[2]) / 2, 0, 0, .3, 0x39486b, 0x1a2338, .2,
+        { kind: "task layer", title: "TodoWrite fills this layer", prio: 6 });
+      rebuildLattice(); rebuildTraffic(); relabel(); return;
+    }
+    todos.forEach((t, i) => {
+      const y = 3.2 - (i / Math.max(1, n - 1)) * 6.4, st = t.status || "pending";
+      const col = st === "completed" ? 0x3f7f5f : st === "in_progress" ? 0x5ee1ff : 0x5a6480;
+      const m = addNode("task:" + i + ":" + t.content, LX[1], y, 0, st === "in_progress" ? .48 : .34,
+        col, col, st === "in_progress" ? .9 : st === "completed" ? .3 : .25,
+        { kind: "task · hidden", title: (t.content || "").slice(0, 34), prio: st === "in_progress" ? 1 : st === "completed" ? 5 : 3,
+          hot: st === "in_progress", badge: st === "in_progress" ? "now" : "",
+          kv: [["status", st]].concat(t.activeForm ? [["doing", t.activeForm]] : []) });
+      if (st === "in_progress") { const g = glow("rgba(94,225,255,1)", 2.6); m.add(g); m.userData.glow = g; activeTask = m.userData.id; }
+    });
+    rebuildLattice(); rebuildTraffic(); relabel();
+  }
+
+  /* ---- file layer: touched files, clustered by project, cluster name labelled on a halo ---- */
+  const writing = new Map();   // tool_use_id -> file path
+  function projOf(p) {
+    const seg = String(p || "").split("/").filter(Boolean);
+    const i = seg.indexOf("projects");
+    if (i >= 0 && seg[i + 1]) return seg[i + 1];   // .../projects/<name>/... clusters by repo
+    return seg.length > 1 ? seg[0] : "(this folder)";
+  }
+  function fileNodeId(p) { return "file:" + p; }
+  function setFiles(paths) {
+    const wanted = new Set((paths || []).map(fileNodeId));
+    for (const id of idsWith("file:")) if (!wanted.has(id)) { const m = nodes.get(id); world.remove(m); m.geometry.dispose(); m.material.dispose(); nodes.delete(id); }
+    renderFiles(wanted);
+  }
+  function renderFiles(wanted) {
+    const byProj = new Map();
+    [...(wanted || new Set([...nodes.keys()].filter((k) => k.startsWith("file:"))))].forEach((id) => {
+      const p = id.slice(5); const pr = projOf(p);
+      if (!byProj.has(pr)) byProj.set(pr, []); byProj.get(pr).push(p);
+    });
+    anchors.forEach((a) => world.remove(a)); anchors.length = 0;
+    const projs = [...byProj.keys()].sort();
+    projs.forEach((pr, ci) => {
+      const cy = 4.2 - ci * 3.1;
+      byProj.get(pr).slice(-8).forEach((p, fi) => {
+        const id = fileNodeId(p), hotp = [...writing.values()].includes(p);
+        addNode(id, LX[2] + ((fi % 2) ? .7 : -.7), cy + (fi % 3) * .55, (fi > 3 ? -1.1 : .4) * .8, .26,
+          hotp ? 0xffd27a : 0x8fd6a8, hotp ? 0xbf8a2f : 0x2fbf7a, hotp ? 1 : .35,
+          { kind: "file", title: baseName(p), prio: hotp ? 1 : 4, hot: hotp, kv: [["path", p], ["project", pr]] });
+      });
+      const anchor = new THREE.Object3D(); anchor.position.set(LX[2] - 1.9, cy + .2, -2.6);
+      anchor.userData = { kind: "project", title: pr, prio: 4, kv: [["files", byProj.get(pr).length]] };
+      world.add(anchor); anchors.push(anchor);
+    });
+    rebuildLattice(); rebuildTraffic(); relabel();
+  }
+
+  /* ---- output layer: the main session plus its subagents ---- */
+  let agentObjs = [];
   function setAgents() {
-    clearObjs(agentObjs); agentObjs = [];
+    dropLayer("out:"); agentObjs = [];
     const list = [["main session", approvals.length ? "needs you" : busy ? "working" : "idle", approvals.length ? `approve ${approvals[0].tool}` : ""]];
     for (const [name, a] of agents) list.push([name, a.state, a.note]);
+    const n = list.length;
     list.forEach(([name, st, note], i) => {
-      const a = i / list.length * Math.PI * 2 + .4, col = st === "needs you" ? 0xffb347 : st === "working" ? 0x5ee1ff : 0x5a6480;
-      const m = new THREE.Mesh(new THREE.OctahedronGeometry(st === "done" || st === "idle" ? .35 : .5, 0), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: st === "done" || st === "idle" ? .15 : .8, flatShading: true, roughness: .3 }));
-      m.userData = { kind: "agent", title: name, a, r: 11.5, speed: .035, state: st, hot: st === "needs you", badge: st === "needs you" || st === "working" ? st : "", prio: st === "needs you" ? 1 : st === "working" ? 2 : 4, kv: [["state", st]].concat(note ? [["now", note]] : []) };
-      if (st === "needs you" || st === "working") m.add(glow(st === "needs you" ? "rgba(255,179,71,1)" : "rgba(94,225,255,1)", 3));
-      world.add(m); agentObjs.push(m);
+      const y = n === 1 ? 0 : 2.2 - (i / (n - 1)) * 4.4, col = st === "needs you" ? 0xffb347 : st === "working" ? 0x5ee1ff : 0x5a6480;
+      const m = addNode("out:" + name, LX[3], y, 0, i === 0 ? .7 : .42, col, col, st === "done" || st === "idle" ? .2 : .8,
+        { kind: i === 0 ? "the session · output" : "subagent · output", title: name, prio: st === "needs you" ? 1 : st === "working" ? 2 : 4,
+          state: st, hot: st === "needs you", badge: st === "needs you" || st === "working" ? st : "",
+          kv: [["state", st]].concat(note ? [["now", note]] : []) });
+      if (st === "needs you" || st === "working") { const g = glow(st === "needs you" ? "rgba(255,179,71,1)" : "rgba(94,225,255,1)", 3.2); m.add(g); m.userData.glow = g; }
+      agentObjs.push(m);
     });
-    rebuildLabels();
+    rebuildLattice(); rebuildTraffic(); relabel();
   }
+  const mainOut = () => nodes.get("out:main session");
+
   function setCore() {
+    const o = mainOut(); if (!o) return;
     const u = state && state.usage, kv = [];
     if (state) kv.push(["model", state.model], ["mode", state.mode]);
     if (u) kv.push(["context", `${short(u.context_used)} of ${short(u.context_window)}`], ["requests", fmt(u.requests)]);
     kv.push(["now", approvals.length ? "waiting for you" : busy ? "working" : "idle"]);
-    core.userData.kv = kv; core.material.emissiveIntensity = busy ? 1.5 : 1.1;
-    if (!focusObj || focusObj === core) showInfo(core.userData);
+    o.userData.kv = kv; o.material.emissiveIntensity = busy ? 1.1 : (approvals.length ? .9 : .25);
+    if (!focusObj || focusObj === o) showInfo(o.userData);
   }
-  function serverOf(name) { const m = /^mcp__(.+?)__/.exec(name); return m ? serverObjs.get(m[1]) : null; }
+
+  /* ---- the Oslo trading day: a thin timeline of hour neurons under the network ---- */
+  const DAY_Y = -7.6, DAY_X0 = -10, DAY_W = 20;
+  const blockOf = (h) => h >= 2 && h < 7 ? 0x6f8cff : h >= 9 && h < 15.5 ? 0x6ee7a8 : h >= 15.5 && h < 22 ? 0xffb347 : 0x22304d;
+  const hourNeurons = [];
+  for (let h = 0; h < 24; h++) {
+    const x = DAY_X0 + (h / 23) * DAY_W;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(h % 6 ? .09 : .16, 12, 12),
+      new THREE.MeshBasicMaterial({ color: blockOf(h + .5), transparent: true, opacity: h % 6 ? .5 : .85 }));
+    m.position.set(x, DAY_Y, 0); world.add(m); hourNeurons.push(m);
+  }
+  const needle = new THREE.Mesh(new THREE.SphereGeometry(.26, 24, 24), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: .9 }));
+  world.add(needle); const needleGlow = glow("rgba(255,255,255,1)", 1.8); world.add(needleGlow);
+  [["Asia", 4.5], ["London", 12.25], ["New York", 18.75]].forEach(([n, h]) => {
+    const anchor = new THREE.Object3D(); anchor.position.set(DAY_X0 + ((h - .5) / 23) * DAY_W, DAY_Y + 1.1, 0);
+    anchor.userData = { kind: "session", title: n, sess: true, prio: 5, kv: [] }; world.add(anchor); anchors.push(anchor);
+  });
+
+  /* ---- live traffic ---- */
+  function serverOf(name) { const m = /^mcp__(.+?)__/.exec(name); return m && serverObjs.has(m[1]) ? "srv:" + m[1] : null; }
   function toolStarted(id, name, inputArgs) {
-    const s = serverOf(name);
-    if (s) { pulse(s, "rgba(94,225,255,1)"); s.userData.hits++; }
-    else if (/^(Task|Agent)$/.test(name)) { const a = agentObjs[agentObjs.length - 1]; if (a) pulse(a, "rgba(255,179,71,1)"); }
+    const src = serverOf(name) || "in:local";
+    bump(src, activeTask || "out:main session");
+    const path = [src]; if (activeTask) path.push(activeTask); path.push("out:main session");
+    pulsePath(path, serverOf(name) ? "rgba(94,225,255,1)" : "rgba(143,214,168,1)");
+    if (/^(Task|Agent)$/.test(name)) { const last = agentObjs[agentObjs.length - 1];
+      if (last) { bump(src, last.userData.id); pulsePath([src, last.userData.id], "rgba(255,179,71,1)"); } }
     if (/^(Write|Edit|MultiEdit)$/.test(name) && inputArgs) {
-      writing.set(id, inputArgs.file_path || inputArgs.path || name);
-      fileSat.userData.title = baseName(writing.get(id)); fileSat.userData.kv = [["being written", writing.get(id)]]; relabel();
+      const p = inputArgs.file_path || inputArgs.path || name;
+      writing.set(id, p);
+      if (!nodes.has(fileNodeId(p))) renderFiles();           // a written file joins the layer at once
+      else relabel();
+      const fn = nodes.get(fileNodeId(p));
+      if (fn) { fn.userData.hot = true; fn.userData.prio = 1; fn.material.emissive = new THREE.Color(0xbf8a2f); fn.material.color = new THREE.Color(0xffd27a); fn.material.emissiveIntensity = 1; }
+      bump(activeTask || "in:local", fileNodeId(p));
+      pulsePath(activeTask ? [activeTask, fileNodeId(p)] : ["in:local", fileNodeId(p)], "rgba(255,210,122,1)");
     }
   }
-  function toolFinished(id) { writing.delete(id); }
+  function toolFinished(id) {
+    const p = writing.get(id); writing.delete(id);
+    if (p) { const fn = nodes.get(fileNodeId(p));
+      if (fn) { fn.userData.hot = false; fn.userData.prio = 4; fn.material.color = new THREE.Color(0x8fd6a8); fn.material.emissive = new THREE.Color(0x2fbf7a); fn.material.emissiveIntensity = .35; relabel(); } }
+  }
   function showInfo(u) {
     inspect.replaceChildren(el("strong", null, u.title), el("span", null, u.kind));
-    u.kv.forEach(([k, v]) => { const s = el("span", null, k + " "); s.append(el("b", null, String(v))); inspect.append(s); });
+    (u.kv || []).forEach(([k, v]) => { const s = el("span", null, k + " "); s.append(el("b", null, String(v))); inspect.append(s); });
   }
+
   let focusObj = null;
-  const focusOn = (o) => { focusObj = o; showInfo(o.userData); wantDist = o === core ? 32 : 18; };
+  const focusOn = (o) => { focusObj = o; showInfo(o.userData); wantDist = nodes.get("out:main session") === o ? 30 : 16; };
   let drag = null, moved = 0;
   canvas.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; moved = 0; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener("pointermove", (e) => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; moved += Math.abs(dx) + Math.abs(dy); yaw -= dx * .005; wantPitch = pitch = Math.max(.08, Math.min(1.35, pitch + dy * .004)); drag = { x: e.clientX, y: e.clientY }; });
@@ -2184,12 +2349,15 @@ function buildScene(THREE) {
   function pick(e) {
     const r = canvas.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
     ray.setFromCamera(ndc, camera); const hit = ray.intersectObjects(pickables, false)[0];
-    if (hit) focusOn(hit.object); else { focusObj = null; showInfo(core.userData); wantDist = 40; }
+    if (hit) focusOn(hit.object); else { focusObj = null; showInfo(nodes.get("out:main session").userData); wantDist = 40; home.set(0, -.6, 0); }
   }
   document.querySelectorAll("[data-focus]").forEach((b) => b.addEventListener("click", () => {
-    document.querySelectorAll("[data-focus]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); focusObj = null; showInfo(core.userData);
+    document.querySelectorAll("[data-focus]").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); focusObj = null; showInfo(nodes.get("out:main session").userData);
     const f = b.dataset.focus;
-    [wantDist, wantPitch] = f === "servers" ? [22, .9] : f === "agents" ? [30, .55] : f === "day" ? [50, 1.3] : [40, .62];
+    if (f === "servers") { home.set(LX[0], 0, 0); [wantDist, wantPitch] = [24, .5]; }
+    else if (f === "tasks") { home.set((LX[1] + LX[2]) / 2, 0, 0); [wantDist, wantPitch] = [22, .45]; }
+    else if (f === "day") { home.set(0, DAY_Y, 0); [wantDist, wantPitch] = [34, 1.15]; }
+    else { home.set(0, -.6, 0); [wantDist, wantPitch] = [40, .5]; }
   }));
   function resize() { const r = canvas.getBoundingClientRect(); if (!r.width || !r.height) return; renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
   new ResizeObserver(resize).observe(canvas); resize();
@@ -2199,22 +2367,29 @@ function buildScene(THREE) {
     requestAnimationFrame(frame);
     if (document.hidden) return;
     const dt = Math.min(clk.getDelta(), .05), t = clk.elapsedTime, spin = reduce ? 0 : 1;
-    core.rotation.y += dt * (busy ? .45 : .15) * spin; shell.rotation.y -= dt * .05 * spin; shell.rotation.x += dt * .03 * spin;
-    const br = 1 + Math.sin(t * (busy ? 3.2 : 1.6)) * .04; coreGlow.scale.set(11 * br, 11 * br, 1);
-    [...serverObjs.values(), ...agentObjs].forEach((o) => { const u = o.userData; u.a += dt * u.speed * spin; o.position.set(Math.cos(u.a) * u.r, Math.sin(u.a * 2) * .25, -Math.sin(u.a) * u.r); o.rotation.y += dt * .6 * spin; if (u.state === "needs you") { const s = 1 + Math.sin(t * 4) * .18; o.scale.set(s, s, s); } });
-    fileSat.visible = beam.visible = writing.size > 0;
-    if (fileSat.visible) { fileSat.position.set(Math.cos(t * .4) * 4.6, 1.6 + Math.sin(t * 1.3) * .2, -Math.sin(t * .4) * 4.6); fileSat.rotation.y += dt * .8; const pa = beam.geometry.attributes.position; pa.setXYZ(1, fileSat.position.x, fileSat.position.y, fileSat.position.z); pa.needsUpdate = true; }
-    const na = hToA(osloHour()); needle.position.set(Math.cos(na) * DAY_R, 0, -Math.sin(na) * DAY_R); needle.lookAt(0, 0, 0); needleGlow.position.copy(needle.position);
-    for (let i = pulses.length - 1; i >= 0; i--) { const p = pulses[i]; p.userData.t += dt * .8; const k = p.userData.t; p.position.lerpVectors(core.position, p.userData.to.position, Math.min(1, k)); p.material.opacity = 1 - Math.max(0, k - .8) * 5; if (k > 1) { world.remove(p); pulses.splice(i, 1); } }
+    const nowTask = activeTask && nodes.get(activeTask);
+    if (nowTask) { const s = 1 + Math.sin(t * 3) * .08 * spin; nowTask.scale.set(s, s, s); }    // only the real in-progress item breathes
+    const you = nodes.get("out:main session");
+    if (you && approvals.length) { const s = 1 + Math.sin(t * 4) * .12 * spin; you.scale.set(s, s, s); }
+    if (nowTask) nowTask.getWorldPosition(v);
+    const hx = DAY_X0 + (Math.min(23.99, osloHour()) / 24) * DAY_W;
+    needle.position.set(hx, DAY_Y, 0); needleGlow.position.copy(needle.position);
+    for (let i = pulses.length - 1; i >= 0; i--) {   // activation travels hop by hop along its path
+      const p = pulses[i]; p.userData.t += dt * 1.4;
+      const segs = p.userData.pts.length - 1, k = p.userData.t;
+      if (k >= segs) { world.remove(p); p.material.dispose(); pulses.splice(i, 1); continue; }
+      const s0 = Math.floor(k), f0 = k - s0;
+      p.position.lerpVectors(p.userData.pts[s0].position, p.userData.pts[s0 + 1].position, f0);
+      p.material.opacity = .85 * (1 - f0 * .3);
+    }
     look.lerp(focusObj ? focusObj.position : home, .06); dist += (wantDist - dist) * .06; pitch += (wantPitch - pitch) * .06;
-    if (!drag && !focusObj && !reduce) yaw += dt * .02;
+    if (!drag && !focusObj && !reduce) yaw += dt * .015;
     camera.position.set(look.x + dist * Math.cos(pitch) * Math.sin(yaw), look.y + dist * Math.sin(pitch), look.z + dist * Math.cos(pitch) * Math.cos(yaw)); camera.lookAt(look);
     renderer.render(world, camera);
-    /* labels: project, then place by priority and hide any that would overlap a placed label or the core */
+    /* labels: project, then place by priority and hide any that would overlap a placed label */
     const r = canvas.getBoundingClientRect(), placed = [];
-    core.getWorldPosition(v); v.project(camera); const cx0 = (v.x + 1) / 2 * r.width, cy0 = (1 - v.y) / 2 * r.height; placed.push([cx0 - 40, cy0 - 40, cx0 + 40, cy0 + 40]);
-    labelled.map((o, i) => [o, i]).sort((a, b) => a[0].userData.prio - b[0].userData.prio).forEach(([o, i]) => {
-      const lbl = labelEls[i]; if (!lbl) return; if (!o.visible) { lbl.hidden = true; return; }
+    labelled.map((o, i) => [o, i]).sort((a, b) => (a[0].userData.prio || 3) - (b[0].userData.prio || 3)).forEach(([o, i]) => {
+      const lbl = labelEls[i]; if (!lbl) return;
       o.getWorldPosition(v); v.project(camera);
       if (v.z >= 1 || Math.abs(v.x) > 1.02 || Math.abs(v.y) > 1.02) { lbl.hidden = true; return; }
       const x = (v.x + 1) / 2 * r.width, y = (1 - v.y) / 2 * r.height, w = lbl.offsetWidth || o.userData.title.length * 6.5 + 12, h = 16;
@@ -2224,12 +2399,12 @@ function buildScene(THREE) {
     });
   }
   setAgents(); setCore(); frame();
-  return { setServers, setAgents, setCore, toolStarted, toolFinished, resize };
+  return { setServers, setAgents, setCore, setTodos, setFiles, toolStarted, toolFinished, resize };
 }
 threeReady.then((THREE) => {
   if (!THREE) { const n = $("noscene"); n.hidden = false; n.textContent = "3D view needs three.js: run mwm --vendor-monaco once, or allow the CDN."; return; }
-  try { scene = buildScene(THREE); } catch (e) { const n = $("noscene"); n.hidden = false; n.textContent = `3D view failed to start: ${e.message}`; return; }
-  if (state) { scene.setServers(state.mcp || []); scene.setCore(); }
+  try { scene = buildCortex(THREE); } catch (e) { const n = $("noscene"); n.hidden = false; n.textContent = `3D view failed to start: ${e.message}`; return; }
+  if (state) { scene.setServers(state.mcp || []); scene.setCore(); scene.setTodos(state.todos || []); scene.setFiles(state.touched || []); }
 });
 
 restoreLayout();

@@ -505,6 +505,55 @@ def test_the_panel_page_the_browser_loads_carries_the_level_toggle() -> None:
     )
 
 
+def test_the_rail_task_block_ticks_the_bar_and_the_strip_without_opening_anything() -> None:
+    """Item 37: run the shipped setTodos itself under node with a stub DOM: the pinned block,
+    the progress bar, the strip chip and the scene all move from one call, no details opened."""
+    if shutil.which("node") is None:
+        pytest.skip("node not installed")
+    script = _panel_script()
+    fn = script[script.index("function setTodos") : script.index("function setPlan")]
+    program = (
+        """
+const el = (tag, cls, text) => { const n = {tag, cls: cls || "", text: text || "", kids: []};
+  n.append = (...x) => n.kids.push(...x); return n; };
+const nodes = {};
+const $ = (id) => (nodes[id] ||= {id, children: [], textContent: "", style: {}, hidden: true,
+  replaceChildren() { this.children = []; }, append(n) { this.children.push(n); }});
+let sceneCalls = null;
+const scene = { setTodos: (t) => { sceneCalls = t; } };
+"""
+        + fn
+        + """
+setTodos([{content: "plan", status: "completed"},
+          {content: "build", status: "in_progress", activeForm: "Building"},
+          {content: "ship", status: "pending"}]);
+const rows = nodes["tasks"].children.map((c) => c.cls);
+const shown = nodes["tasks"].children.map((c) => c.kids[1].text);
+const mid = [nodes["tasksum"].textContent, nodes["taskbar"].style.width,
+  nodes["striptasks"].hidden, nodes["striptaskn"].textContent, sceneCalls.length];
+setTodos([]);
+const empty = nodes["tasks"].children.map((c) => c.cls + "|" + c.text);
+console.log(JSON.stringify([rows, shown, mid[0], mid[1], mid[2], mid[3], mid[4], empty]));
+"""
+    )
+    path = Path(__file__).resolve().parents[1] / ".pytest-node-tasks"
+    script_file = path.with_suffix(".js")
+    script_file.write_text(program, encoding="utf-8")
+    try:
+        done = subprocess.run(
+            ["node", str(script_file)], capture_output=True, text=True, timeout=30
+        )
+        assert done.returncode == 0, done.stderr
+        rows, shown, sum_txt, bar, strip_hidden, strip_n, calls, empty = json.loads(done.stdout)
+        assert rows == ["done", "now", ""], rows
+        assert shown == ["plan", "Building", "ship"], shown  # in_progress shows its activeForm
+        assert (sum_txt, bar, strip_hidden, strip_n) == ("1 of 3", "33.3%", False, "1/3")
+        assert calls == 3, "the scene must receive the same list the rail draws"
+        assert empty == ["empty|No tasks yet. The model keeps this list with TodoWrite."], empty
+    finally:
+        script_file.unlink(missing_ok=True)
+
+
 def test_the_panel_script_still_parses() -> None:
     """A JavaScript syntax error bricks the whole desk silently, so it is checked as code."""
     if shutil.which("node") is None:
