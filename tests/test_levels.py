@@ -505,6 +505,26 @@ def test_the_panel_page_the_browser_loads_carries_the_level_toggle() -> None:
     )
 
 
+def test_the_cortex_scene_is_the_shipped_page_and_keeps_its_seams() -> None:
+    """Item 38: the served page must carry the network scene, its two new seams and the fallback."""
+    script = _panel_script()
+    for needle in (
+        "function buildCortex",
+        "scene.setTodos",
+        "scene.setFiles",
+        "buildCortex(THREE)",
+        '$("noscene")',
+    ):
+        assert needle in script, f"the shipped page is missing {needle!r}"
+    html = (
+        Path(__file__).resolve().parents[1] / "mwm_harness" / "web" / "static" / "index.html"
+    ).read_text(encoding="utf-8")
+    for needle in ('data-focus="day"', 'id="noscene"', "live neural network"):
+        assert needle in html, f"the served markup is missing {needle!r}"
+    assert "buildScene" not in script, "the sun scene must be gone, not shadowed"
+    assert "shadowMap" not in script, "painted glows only: SwiftShader crashes on shadow maps"
+
+
 def test_the_rail_task_block_ticks_the_bar_and_the_strip_without_opening_anything() -> None:
     """Item 37: run the shipped setTodos itself under node with a stub DOM: the pinned block,
     the progress bar, the strip chip and the scene all move from one call, no details opened."""
