@@ -21,6 +21,7 @@ tokens only while it is recent enough to be sent (see observation_pack).
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 import uuid
@@ -35,6 +36,26 @@ from mwm_harness.streaming import AssembledTurn
 Block = dict[str, Any]
 
 
+def canonical_json(payload: Any) -> str:
+    """One JSON spelling for everything the harness hashes or compares byte for byte.
+
+    Key order and whitespace would otherwise make the same payload hash differently in
+    two places, so the request log (plan item 4), the transcript stamp and the tests all
+    go through this function.
+    """
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def content_sha(payload: Any) -> str:
+    """A stable digest of a message content, a tool list, a model spec or a whole request.
+
+    Text is tagged apart from structure so the string ``"[1,2]"`` and the list ``[1, 2]``
+    cannot share a digest: a shared digest would hand one blob's payload to the other.
+    """
+    text = f"s:{payload}" if isinstance(payload, str) else f"j:{canonical_json(payload)}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
 @dataclass
 class Message:
     role: str
@@ -44,6 +65,15 @@ class Message:
     is_meta: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
     ts: str = field(default_factory=now_stamp, compare=False)
+    # Where this message lives in the transcript, and the digest of the content it was
+    # written with (plan item 4: the request log points at stored messages by position
+    # instead of copying them into every request line). Both are stamped by
+    # ``Transcript.append`` and carried along by ``dataclasses.replace``, so a copy whose
+    # content was rewritten for one request (ObservationPack, a prune stub) still knows
+    # which stored message it came from and that its text is no longer the stored text.
+    # -1 means "not in the transcript": a message that only exists inside one request.
+    entry: int = field(default=-1, compare=False, repr=False)
+    stored_sha: str = field(default="", compare=False, repr=False)
 
     def blocks(self) -> list[Block]:
         if isinstance(self.content, str):

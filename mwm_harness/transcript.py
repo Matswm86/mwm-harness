@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from mwm_harness import __version__
-from mwm_harness.messages import Message
+from mwm_harness.messages import Message, content_sha
 
 
 def sessions_root() -> Path:
@@ -33,6 +33,10 @@ class Transcript:
         self.session_id = session_id
         self.cwd = cwd
         self._last_uuid: str | None = None
+        # How many user/assistant lines this file holds. The request log (plan item 4)
+        # points at a stored message by this position instead of copying it per request,
+        # so the count here and the order the reader enumerates have to stay the same.
+        self._entries = 0
         path.parent.mkdir(parents=True, exist_ok=True)
 
     @classmethod
@@ -44,6 +48,12 @@ class Transcript:
     def append(self, message: Message, **fields: Any) -> str:
         """Write one user or assistant message. Returns the entry uuid."""
         entry_uuid = str(uuid.uuid4())
+        # Stamp where this message lives and with what content, so a later request can
+        # point at it instead of copying it, and can tell a rewritten copy from the
+        # stored original (plan item 4).
+        message.entry = self._entries
+        message.stored_sha = content_sha(message.content)
+        self._entries += 1
         body: dict[str, Any] = {"role": message.role, "content": message.content}
         body.update(message.extra)
         entry: dict[str, Any] = {
