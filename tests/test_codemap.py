@@ -101,8 +101,13 @@ def test_a_cut_map_never_overspends_the_cap_its_own_note_names(tmp_path: Path) -
     The package's map crossed 24,000 characters when item 23 landed, which is where the arithmetic
     was found wanting: the cut is the guarantee this function exists to make.
     """
-    body = "\n".join(f"def function_{i}():\n    return {i}\n" for i in range(200))
+    body = "\n".join(f"def function_{i}():\n    return {i}\n" for i in range(240))
     code = codemap.index(tree(tmp_path, {f"m{row}.py": body for row in range(6)}))
+    whole = code.text(limit=10**9)
+    assert len(whole) > codemap.MAX_TEXT_CHARS, (
+        f"this fixture must overflow the cap or the cut is untested: {len(whole)} vs "
+        f"{codemap.MAX_TEXT_CHARS}"
+    )
     for limit in (1_000, 5_000, codemap.MAX_TEXT_CHARS):
         text = code.text(limit=limit)
         assert len(text) <= limit, f"a {limit}-character cap held at {len(text)}"

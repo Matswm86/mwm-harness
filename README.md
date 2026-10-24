@@ -336,7 +336,8 @@ stdio server plays MCP, a mocked transport plays the web.
   does not define) is listed as unresolved rather than guessed. The same map, one
   line per function, goes into the system prompt of a model whose window is under
   `code_map_below` (65,536 by default), so a small local model can name the file
-  worth reading instead of reading whole files; it is cut at 24,000 characters.
+  worth reading instead of reading whole files; it is cut at 32,000 characters
+  (`codemap.MAX_TEXT_CHARS`), which fits this package's own map uncut.
 - `diagnose.py`: failure diagnosis. When the check chain or a test run fails after a turn that
   wrote files, one call turns that failure into a short report: where it points, why, and the order
   to check in. The location is found without a model: Python traceback frames, `pytest` short-test

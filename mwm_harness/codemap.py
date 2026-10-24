@@ -39,7 +39,8 @@ SKIP_DIRS = frozenset(
 MAX_FILES = 4_000  # a tree bigger than this is not one package, and the map stops saying so
 MAX_FILE_BYTES = 400_000  # a generated file this large says nothing about who calls what
 MAX_TEXT_CHARS = (
-    24_000  # the map exists for small windows, so it is cut rather than allowed to grow
+    32_000  # Mats 10-24: fits this package's own map (24,021 at item 23) with room to grow; a
+    # bigger tree is still cut rather than allowed to spend a small window's whole budget
 )
 CALL_TEXT = 60  # characters of a call expression kept when it names no target
 
